@@ -47,6 +47,7 @@ ConstraintType StringToConstraintType(const std::string &type);
 
 class TableElement {
 public:
+    TableElement() = default;
     explicit TableElement(TableElementType type) : type_(type) {}
     virtual ~TableElement() = default;
     TableElementType type_{TableElementType::kColumn};
@@ -82,6 +83,7 @@ public:
 
 class ColumnDef : public TableElement {
 public:
+    ColumnDef() = default;
     ColumnDef(int64_t id,
               std::shared_ptr<DataType> column_type,
               std::string column_name,
@@ -131,7 +133,7 @@ public:
 
 public:
     int64_t id_{-1};
-    const std::shared_ptr<DataType> column_type_{};
+    const std::shared_ptr<DataType> column_type_;
     std::string name_{};
     std::set<ConstraintType> constraints_{};
     std::string comment_{};

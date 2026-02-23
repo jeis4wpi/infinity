@@ -362,6 +362,7 @@ export struct ImportTxnStore final : public BaseTxnStore {
     std::string table_key_{};
     std::string import_tmp_path_{};
     std::vector<std::string> import_file_names_{}; // used during rollback
+    std::vector<std::string> file_worker_paths_{}; // File worker paths to move in PrepareCommit
     std::vector<WalSegmentInfo> segment_infos_{};
 
     std::vector<std::string> index_names_{};
@@ -483,6 +484,11 @@ export struct DeleteTxnStore final : public BaseTxnStore {
     std::shared_ptr<WalEntry> ToWalEntry(TxnTimeStamp commit_ts) const final;
 };
 
+export struct UpdateAppendBlock {
+    std::shared_ptr<DataBlock> block_{};
+    std::vector<std::pair<RowID, u64>> row_ranges_{};
+};
+
 export struct UpdateTxnStore final : public BaseTxnStore {
     UpdateTxnStore() : BaseTxnStore(TransactionType::kUpdate) {}
     ~UpdateTxnStore() override = default;
@@ -494,11 +500,11 @@ export struct UpdateTxnStore final : public BaseTxnStore {
     u64 db_id_{};
     u64 table_id_{};
 
-    std::vector<std::shared_ptr<DataBlock>> input_blocks_{};
     std::vector<std::string> index_ids_{}; // indexes will be appended
 
     // For data append
-    std::vector<std::pair<RowID, u64>> row_ranges_{};
+    std::vector<UpdateAppendBlock> append_blocks_{};
+    std::size_t append_count_{};
 
     // For mem index
     std::vector<MemIndexRange> mem_indexes_to_append_{};

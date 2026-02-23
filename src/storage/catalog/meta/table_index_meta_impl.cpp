@@ -21,6 +21,7 @@ import :kv_store;
 import :table_meta;
 import :kv_code;
 import :index_base;
+import :index_secondary_functional;
 import :meta_info;
 import :new_catalog;
 import :infinity_context;
@@ -166,33 +167,9 @@ Status TableIndexMeta::RemoveSegmentIndexIDs(const std::vector<SegmentID> &segme
     return Status::OK();
 }
 
-Status TableIndexMeta::GetSegmentUpdateTS(std::shared_ptr<SegmentUpdateTS> &segment_update_ts) {
-    if (segment_update_ts_) {
-        segment_update_ts = segment_update_ts_;
-        return Status::OK();
-    }
-    std::string segment_update_ts_key = GetTableIndexTag("segment_update_ts");
-    NewCatalog *new_catalog = InfinityContext::instance().storage()->new_catalog();
-    Status status = new_catalog->GetSegmentUpdateTS(segment_update_ts_key, segment_update_ts);
-    if (!status.ok()) {
-        return status;
-    }
-    segment_update_ts_ = segment_update_ts;
-    return Status::OK();
-}
-
 Status TableIndexMeta::InitSet1(const std::shared_ptr<IndexBase> &index_base, NewCatalog *new_catalog) {
     {
         Status status = SetIndexBase(index_base);
-        if (!status.ok()) {
-            return status;
-        }
-    }
-    if (index_base->index_type_ == IndexType::kFullText) {
-        std::string segment_update_ts_key = GetTableIndexTag("segment_update_ts");
-        LOG_INFO(fmt::format("segment_update_ts_key: {}", segment_update_ts_key));
-        auto segment_update_ts = std::make_shared<SegmentUpdateTS>();
-        Status status = new_catalog->AddSegmentUpdateTS(segment_update_ts_key, segment_update_ts);
         if (!status.ok()) {
             return status;
         }
@@ -214,10 +191,6 @@ Status TableIndexMeta::UninitSet1(UsageFlag usage_flag) {
             if (!status.ok() && status.code() != ErrorCode::kCatalogError) {
                 return status;
             }
-
-            NewCatalog *new_catalog = InfinityContext::instance().storage()->new_catalog();
-            std::string segment_update_ts_key = GetTableIndexTag("segment_update_ts");
-            new_catalog->DropSegmentUpdateTSByKey(segment_update_ts_key);
         }
     }
 
@@ -274,6 +247,13 @@ Status TableIndexMeta::GetTableIndexInfo(TableIndexInfo &table_index_info) {
     table_index_info.index_column_names_ = std::make_shared<std::string>(column_def->name_);
     table_index_info.index_column_ids_ = std::make_shared<std::string>(std::to_string(column_def->id_));
 
+    if (index_def_->index_type_ == IndexType::kSecondaryFunctional) {
+        auto functional_index = std::static_pointer_cast<IndexSecondaryFunctional>(index_def_);
+        table_index_info.function_info_ = std::make_shared<std::string>(*functional_index->GetFuncColParams());
+    } else {
+        table_index_info.function_info_ = std::make_shared<std::string>("");
+    }
+
     return Status::OK();
 }
 
@@ -303,39 +283,6 @@ std::tuple<std::shared_ptr<TableIndexSnapshotInfo>, Status> TableIndexMeta::MapM
         table_index_snapshot_info->segment_index_snapshots_.emplace_back(segment_index_snapshot);
     }
     return {table_index_snapshot_info, Status::OK()};
-}
-
-Status TableIndexMeta::SetSecondaryIndexCardinality(SecondaryIndexCardinality cardinality) {
-    std::string cardinality_key = GetTableIndexTag("cardinality");
-    u8 cardinality_value = static_cast<u8>(cardinality);
-    Status status = kv_instance_.Put(cardinality_key, std::string(reinterpret_cast<const char *>(&cardinality_value), sizeof(cardinality_value)));
-    if (!status.ok()) {
-        return status;
-    }
-    return Status::OK();
-}
-
-std::tuple<SecondaryIndexCardinality, Status> TableIndexMeta::GetSecondaryIndexCardinality() {
-    std::string cardinality_key = GetTableIndexTag("cardinality");
-    std::string cardinality_value_str;
-    Status status = kv_instance_.Get(cardinality_key, cardinality_value_str);
-    if (!status.ok()) {
-        // Default to HighCardinality if not set
-        return {SecondaryIndexCardinality::kHighCardinality, Status::OK()};
-    }
-
-    if (cardinality_value_str.size() != sizeof(u8)) {
-        return {SecondaryIndexCardinality::kInvalid, Status::InvalidIndexParam("Invalid cardinality data")};
-    }
-
-    u8 cardinality_value = *reinterpret_cast<const u8 *>(cardinality_value_str.data());
-    SecondaryIndexCardinality cardinality = static_cast<SecondaryIndexCardinality>(cardinality_value);
-
-    if (cardinality != SecondaryIndexCardinality::kHighCardinality && cardinality != SecondaryIndexCardinality::kLowCardinality) {
-        return {SecondaryIndexCardinality::kInvalid, Status::InvalidIndexParam("Invalid cardinality value")};
-    }
-
-    return {cardinality, Status::OK()};
 }
 
 } // namespace infinity

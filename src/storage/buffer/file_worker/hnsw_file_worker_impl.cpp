@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+module;
+
+#include <sys/mman.h>
+#include <unistd.h>
+
 module infinity_core:hnsw_file_worker.impl;
 
 import :hnsw_file_worker;
@@ -25,6 +30,7 @@ import :hnsw_handler;
 import :virtual_store;
 import :persistence_manager;
 import :local_file_handle;
+import :fileworker_manager;
 
 import std;
 import third_party;
@@ -36,26 +42,15 @@ import create_index_info;
 import internal_types;
 
 namespace infinity {
-
-HnswFileWorker::HnswFileWorker(std::shared_ptr<std::string> data_dir,
-                               std::shared_ptr<std::string> temp_dir,
-                               std::shared_ptr<std::string> file_dir,
-                               std::shared_ptr<std::string> file_name,
+HnswFileWorker::HnswFileWorker(std::shared_ptr<std::string> file_path,
                                std::shared_ptr<IndexBase> index_base,
                                std::shared_ptr<ColumnDef> column_def,
-                               PersistenceManager *persistence_manager,
                                size_t index_size)
-    : IndexFileWorker(std::move(data_dir),
-                      std::move(temp_dir),
-                      std::move(file_dir),
-                      std::move(file_name),
-                      std::move(index_base),
-                      std::move(column_def),
-                      persistence_manager) {
+    : IndexFileWorker(std::move(file_path), std::move(index_base), std::move(column_def)) {
     if (index_size == 0) {
 
-        std::string index_path = GetFilePath();
-        auto [file_handle, status] = VirtualStore::Open(index_path, FileAccessMode::kRead);
+        std::string index_path = GetPath();
+        auto [file_handle, status] = VirtualStore::Open(index_path, FileAccessMode::kReadWrite);
         if (status.ok()) {
             // When replay by checkpoint, the data is deleted, but catalog is recovered. Do not read file in recovery.
             index_size = file_handle->FileSize();
@@ -65,74 +60,51 @@ HnswFileWorker::HnswFileWorker(std::shared_ptr<std::string> data_dir,
 }
 
 HnswFileWorker::~HnswFileWorker() {
-    if (data_ != nullptr) {
-        FreeInMemory();
-        data_ = nullptr;
-    }
-    if (mmap_data_ != nullptr) {
-        FreeFromMmapImpl();
-        mmap_data_ = nullptr;
-    }
+    munmap(mmap_, mmap_size_);
+    mmap_ = nullptr;
 }
 
-void HnswFileWorker::AllocateInMemory() {
-    if (data_) {
-        UnrecoverableError("Data is already allocated.");
-    }
-    data_ = static_cast<void *>(new HnswHandlerPtr());
-}
+bool HnswFileWorker::Write(std::shared_ptr<HnswHandler> &data,
+                           std::unique_ptr<LocalFileHandle> &file_handle,
+                           bool &prepare_success,
+                           const FileWorkerSaveCtx &ctx) {
+    std::unique_lock l(mutex_);
 
-void HnswFileWorker::FreeInMemory() {
-    if (!data_) {
-        UnrecoverableError("FreeInMemory: Data is not allocated.");
-    }
-    auto *hnsw_handler = reinterpret_cast<HnswHandlerPtr *>(data_);
-    delete *hnsw_handler;
-    delete hnsw_handler;
-    data_ = nullptr;
-}
+    auto fd = file_handle->fd();
+    mmap_size_ = data->CalcSize();
+    ftruncate(fd, mmap_size_);
 
-bool HnswFileWorker::WriteToFileImpl(bool to_spill, bool &prepare_success, const FileWorkerSaveCtx &ctx) {
-    if (!data_) {
-        UnrecoverableError("WriteToFileImpl: Data is not allocated.");
-    }
-    auto *hnsw_handler = reinterpret_cast<HnswHandlerPtr *>(data_);
-    (*hnsw_handler)->SaveToPtr(*file_handle_);
+    mmap_ = mmap(nullptr, mmap_size_, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
+
+    size_t offset{};
+    data->SaveToPtr(mmap_, offset);
+
+    auto &path = *rel_file_path_;
+    auto &cache_manager = InfinityContext::instance().storage()->fileworker_manager()->hnsw_map_.cache_manager_;
+    cache_manager.Set(path, data, data->MemUsage());
     prepare_success = true;
     return true;
 }
 
-void HnswFileWorker::ReadFromFileImpl(size_t file_size, bool from_spill) {
-    if (data_ != nullptr) {
-        UnrecoverableError("Data is already allocated.");
-    }
-    data_ = static_cast<void *>(new HnswHandlerPtr(HnswHandler::Make(index_base_.get(), column_def_).release()));
-    auto *hnsw_handler = reinterpret_cast<HnswHandlerPtr *>(data_);
-    if (from_spill) {
-        (*hnsw_handler)->Load(*file_handle_);
-    } else {
-        (*hnsw_handler)->LoadFromPtr(*file_handle_, file_size);
-    }
-}
+void HnswFileWorker::Read(std::shared_ptr<HnswHandler> &data, std::unique_ptr<LocalFileHandle> &file_handle, size_t file_size) {
+    // std::unique_lock l(mutex_);
 
-bool HnswFileWorker::ReadFromMmapImpl(const void *ptr, size_t size) {
-    if (mmap_data_ != nullptr) {
-        UnrecoverableError("Mmap data is already allocated.");
+    auto &path = *rel_file_path_;
+    auto &cache_manager = InfinityContext::instance().storage()->fileworker_manager()->hnsw_map_.cache_manager_;
+    bool flag = cache_manager.Get(path, data);
+    if (!flag) {
+        if (!file_handle) {
+            return;
+        }
+        data = HnswHandler::Make(index_base_.get(), column_def_);
+        if (!mmap_) {
+            mmap_size_ = file_handle->FileSize();
+            auto fd = file_handle->fd();
+            mmap_ = mmap(nullptr, mmap_size_, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
+        }
+        data->LoadFromPtr(mmap_, mmap_size_, file_size);
+        cache_manager.Set(path, data, data->MemUsage());
     }
-    mmap_data_ = reinterpret_cast<u8 *>(new HnswHandlerPtr(HnswHandler::Make(index_base_.get(), column_def_, false).release()));
-    auto *hnsw_handler = reinterpret_cast<HnswHandlerPtr *>(mmap_data_);
-    (*hnsw_handler)->LoadFromPtr(static_cast<const char *>(ptr), size);
-    return true;
-}
-
-void HnswFileWorker::FreeFromMmapImpl() {
-    if (mmap_data_ == nullptr) {
-        UnrecoverableError("Mmap data is not allocated.");
-    }
-    auto *hnsw_handler = reinterpret_cast<HnswHandlerPtr *>(mmap_data_);
-    delete *hnsw_handler;
-    delete hnsw_handler;
-    mmap_data_ = nullptr;
 }
 
 } // namespace infinity

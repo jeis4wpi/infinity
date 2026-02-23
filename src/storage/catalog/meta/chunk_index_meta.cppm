@@ -16,6 +16,11 @@ export module infinity_core:chunk_index_meta;
 
 import :status;
 import :new_catalog;
+import :index_file_worker;
+import :secondary_index_file_worker;
+import :raw_file_worker;
+import :emvb_index_file_worker;
+import :bmp_index_file_worker;
 
 import third_party;
 
@@ -25,14 +30,14 @@ namespace infinity {
 export struct ChunkIndexSnapshotInfo;
 class KVInstance;
 class SegmentIndexMeta;
-class BufferObj;
+// class SecondaryIndexFileWorker;
 
 export struct ChunkIndexMetaInfo {
     ChunkIndexMetaInfo() = default;
     ChunkIndexMetaInfo(std::string base_name, RowID base_row_id, size_t row_cnt, size_t term_cnt, size_t index_size)
         : base_name_(base_name), base_row_id_(base_row_id), row_cnt_(row_cnt), term_cnt_(term_cnt), index_size_(index_size) {}
-    std::string base_name_{};
-    RowID base_row_id_{};
+    std::string base_name_;
+    RowID base_row_id_;
     size_t row_cnt_{};
     size_t term_cnt_{}; // used only in fulltext index
     size_t index_size_{};
@@ -54,13 +59,21 @@ public:
 
     Status GetChunkInfo(ChunkIndexMetaInfo *&chunk_info);
 
-    Status GetIndexBuffer(BufferObj *&index_buffer);
+    template <typename FileWorkerT>
+    Status GetFileWorker(FileWorkerT *&index_file_worker) { // yee todo
+        if (!index_file_worker_) {
+            Status status = LoadIndexFileWorker();
+            if (!status.ok()) {
+                return status;
+            }
+        }
+        index_file_worker = static_cast<FileWorkerT *>(index_file_worker_);
+        return Status::OK();
+    }
 
     Status InitSet(const ChunkIndexMetaInfo &chunk_info);
 
     Status LoadSet();
-
-    Status RestoreSet();
 
     Status RestoreSetFromSnapshot(const ChunkIndexMetaInfo &chunk_info);
 
@@ -75,7 +88,7 @@ public:
 private:
     Status LoadChunkInfo();
 
-    Status LoadIndexBuffer();
+    Status LoadIndexFileWorker();
 
     std::string GetChunkIndexTag(const std::string &tag) const;
 
@@ -88,7 +101,9 @@ private:
 
     std::optional<ChunkIndexMetaInfo> chunk_info_;
 
-    BufferObj *index_buffer_ = nullptr;
+    IndexFileWorker *index_file_worker_{};
+
+    IndexType index_type_{IndexType::kInvalid};
 };
 
 } // namespace infinity

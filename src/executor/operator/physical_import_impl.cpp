@@ -17,6 +17,7 @@ module;
 #include <cassert>
 #include <cerrno>
 #include <cstring>
+#include <zsv.h>
 
 module infinity_core:physical_import.impl;
 
@@ -30,8 +31,7 @@ import :expression_state;
 import :data_block;
 import :logger;
 import :defer_op;
-import :buffer_handle;
-import :data_file_worker;
+// import :data_file_worker;
 import :infinity_exception;
 import :zsv;
 import :status;
@@ -47,6 +47,7 @@ import :wal_manager;
 import :infinity_context;
 import :new_txn;
 import :txn_state;
+import :json_manager;
 
 import std.compat;
 import third_party;
@@ -101,10 +102,10 @@ public:
 
     ColumnVector &GetColumnVector(size_t column_idx) {
         assert(column_idx < column_defs_.size());
-        return *cur_block_->column_vectors[column_idx];
+        return *cur_block_->column_vectors_[column_idx];
     }
 
-    std::vector<std::shared_ptr<ColumnVector>> &GetColumnVectors() { return cur_block_->column_vectors; }
+    std::vector<std::shared_ptr<ColumnVector>> &GetColumnVectors() { return cur_block_->column_vectors_; }
 
     std::string GetDBName() const { return db_name_; }
     std::string GetTableName() const { return table_name_; }
@@ -128,37 +129,29 @@ public:
         block_row_cnts_.push_back(row_cnt);
         FinalizeBlock();
 
-        std::vector<std::string> object_paths{};
+        std::vector<std::string> object_paths;
         if (txn_ == nullptr) {
             UnrecoverableError("Txn is nullptr");
         }
         txn_->WriteDataBlockToFile(db_name_, table_name_, std::move(data_block_), block_idx, &object_paths);
-
-        BufferManager *buffer_mgr = InfinityContext::instance().storage()->buffer_manager();
-        for (auto &object_path : object_paths) {
-            auto buf_obj = buffer_mgr->GetBufferObject(object_path);
-            buffer_mgr->RemoveFromGCQueue(buf_obj);
-            buf_obj->Free();
-        }
-        buffer_mgr->RemoveBufferObjects(object_paths);
     }
 
 private:
-    NewTxn *txn_ = nullptr;
+    NewTxn *txn_{};
 
-    size_t block_capacity_ = 0;
-    size_t row_count_ = 0;
+    size_t block_capacity_{};
+    size_t row_count_{};
     std::string db_name_{};
     std::string table_name_{};
     std::vector<std::shared_ptr<ColumnDef>> column_defs_;
     std::vector<std::shared_ptr<DataType>> column_types_;
 
     std::shared_ptr<DataBlock> data_block_{};
-    std::vector<size_t> block_row_cnts_{};
+    std::vector<size_t> block_row_cnts_;
 
-    DataBlock *cur_block_ = nullptr;
-    size_t cur_block_row_count_ = 0;
-    size_t block_idx_ = 0;
+    DataBlock *cur_block_{};
+    size_t cur_block_row_count_{};
+    size_t block_idx_{};
 };
 
 class NewZxvParserCtx : public NewImportCtx {
@@ -656,19 +649,18 @@ void PhysicalImport::NewCSVRowHandler(void *context_raw_ptr) {
     size_t column_count = parser_context->parser_.CellCount();
     size_t table_column_count = parser_context->GetColumnCount();
     if (column_count > table_column_count) {
-        Status status = Status::ColumnCountMismatch(
+        RecoverableError(Status::ColumnCountMismatch(
             fmt::format("CSV file column count isn't match with table schema, row id: {}, column_count: {}, table_entry->ColumnCount: {}.",
                         parser_context->GetRowCount(),
                         column_count,
-                        table_column_count));
-        RecoverableError(status);
+                        table_column_count)));
     }
 
     std::vector<std::string> parsed_cell;
     parsed_cell.reserve(column_count);
 
     for (size_t column_idx = 0; column_idx < table_column_count; ++column_idx) {
-        ColumnVector &column_vector = parser_context->GetColumnVector(column_idx);
+        auto &column_vector = parser_context->GetColumnVector(column_idx);
 
         if (column_idx < column_count) {
             ZsvCell cell = parser_context->parser_.GetCell(column_idx);
@@ -683,9 +675,8 @@ void PhysicalImport::NewCSVRowHandler(void *context_raw_ptr) {
             auto const_expr = dynamic_cast<ConstantExpr *>(column_def->default_expr_.get());
             column_vector.AppendByConstantExpr(const_expr);
         } else {
-            Status status = Status::ImportFileFormatError(
-                fmt::format("No value in column {} in CSV of row number: {}", column_def->name_, parser_context->GetRowCount()));
-            RecoverableError(status);
+            RecoverableError(Status::ImportFileFormatError(
+                fmt::format("No value in column {} in CSV of row number: {}", column_def->name_, parser_context->GetRowCount())));
         }
     }
     parser_context->AddRowCnt();
@@ -1025,6 +1016,12 @@ void PhysicalImport::JSONLRowHandler(std::string_view line_sv, std::vector<std::
                 case LogicalType::kVarchar: {
                     std::string_view str_view = doc[column_def->name_];
                     column_vector.AppendByStringView(str_view);
+                    break;
+                }
+                case LogicalType::kJson: {
+                    std::string_view str_view = doc[column_def->name_];
+                    auto modified_data = JsonManager::unescapeQuotes(std::string(str_view));
+                    column_vector.AppendByStringView(modified_data);
                     break;
                 }
                 case LogicalType::kEmbedding: {
@@ -1672,6 +1669,7 @@ void PhysicalImport::ParquetValueHandler(const std::shared_ptr<arrow::Array> &ar
             column_vector.AppendByPtr(reinterpret_cast<const char *>(&timestamp_value));
             break;
         }
+        case LogicalType::kJson:
         case LogicalType::kVarchar: {
             std::string value_str = std::static_pointer_cast<arrow::StringArray>(array)->GetString(value_idx);
             std::string_view value(value_str);
@@ -1998,6 +1996,10 @@ Value GetValueFromParquetRecursively(const DataType &data_type, const std::share
         case LogicalType::kVarchar: {
             std::string value_str = std::static_pointer_cast<arrow::StringArray>(array)->GetString(value_idx);
             return Value::MakeVarchar(std::move(value_str));
+        }
+        case LogicalType::kJson: {
+            std::string value_str = std::static_pointer_cast<arrow::StringArray>(array)->GetString(value_idx);
+            return Value::MakeJson(value_str, nullptr);
         }
         case LogicalType::kEmbedding: {
             auto *embedding_info = static_cast<const EmbeddingInfo *>(data_type.type_info().get());

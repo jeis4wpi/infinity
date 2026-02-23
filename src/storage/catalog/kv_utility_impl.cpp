@@ -22,10 +22,8 @@ import :utility;
 import :logger;
 import :new_catalog;
 import :infinity_context;
-import :buffer_handle;
-import :buffer_obj;
 import :block_version;
-import :buffer_manager;
+import :fileworker_manager;
 import :infinity_exception;
 import :config;
 
@@ -148,40 +146,25 @@ size_t GetBlockRowCount(KVInstance *kv_instance,
                         BlockID block_id,
                         TxnTimeStamp begin_ts,
                         TxnTimeStamp commit_ts) {
+    auto block_lock_key = KeyEncode::CatalogTableSegmentBlockTagKey(db_id_str, table_id_str, segment_id, block_id, "lock");
 
-    NewCatalog *new_catalog = InfinityContext::instance().storage()->new_catalog();
-    std::string block_lock_key = KeyEncode::CatalogTableSegmentBlockTagKey(db_id_str, table_id_str, segment_id, block_id, "lock");
-
-    std::shared_ptr<BlockLock> block_lock;
-    Status status = new_catalog->GetBlockLock(block_lock_key, block_lock);
-    if (!status.ok()) {
-        UnrecoverableError("Failed to get block lock");
+    auto *fileworker_mgr = InfinityContext::instance().storage()->fileworker_manager();
+    auto rel_version_filepath = fmt::format("db_{}/tbl_{}/seg_{}/blk_{}/{}", db_id_str, table_id_str, segment_id, block_id, BlockVersion::PATH);
+    auto *version_file_worker = fileworker_mgr->version_map_.GetFileWorker(rel_version_filepath);
+    if (version_file_worker == nullptr) {
+        UnrecoverableError(fmt::format("Get version buffer failed: {}", rel_version_filepath));
     }
 
-    BufferManager *buffer_mgr = InfinityContext::instance().storage()->buffer_manager();
-    std::string version_filepath = fmt::format("{}/db_{}/tbl_{}/seg_{}/blk_{}/{}",
-                                               InfinityContext::instance().config()->DataDir(),
-                                               db_id_str,
-                                               table_id_str,
-                                               segment_id,
-                                               block_id,
-                                               BlockVersion::PATH);
-    BufferObj *version_buffer = buffer_mgr->GetBufferObject(version_filepath);
-    if (version_buffer == nullptr) {
-        UnrecoverableError(fmt::format("Get version buffer failed: {}", version_filepath));
-    }
-
-    BufferHandle buffer_handle = version_buffer->Load();
-    const auto *block_version = reinterpret_cast<const BlockVersion *>(buffer_handle.GetData());
-
+    std::shared_ptr<BlockVersion> block_version;
+    FileWorker::Read(version_file_worker, block_version);
     size_t row_cnt = 0;
-    {
-        std::shared_lock lock(block_lock->mtx_);
-        row_cnt = block_version->GetRowCount(begin_ts);
-        auto [offset, commit_cnt] = block_version->GetCommitRowCount(commit_ts);
-        row_cnt += commit_cnt;
+    if (block_version) {
+        {
+            row_cnt = block_version->GetRowCount(begin_ts);
+            auto [offset, commit_cnt] = block_version->GetCommitRowCount(commit_ts);
+            row_cnt += commit_cnt;
+        }
     }
-
     return row_cnt;
 }
 

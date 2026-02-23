@@ -18,7 +18,6 @@ import :bmp_alg;
 import :bmp_util;
 import :index_base;
 import :index_bmp;
-import :buffer_handle;
 import :base_memindex;
 import :memindex_tracer;
 import :sparse_util;
@@ -34,9 +33,8 @@ import internal_types;
 namespace infinity {
 
 struct ChunkIndexMetaInfo;
-class BufferManager;
-class BufferObj;
 class LocalFileHandle;
+struct BMPIndexFileWorker;
 
 using AbstractBMP = std::variant<std::unique_ptr<BMPAlg<f32, i32, BMPCompressType::kCompressed>>,
                                  std::unique_ptr<BMPAlg<f32, i32, BMPCompressType::kRaw>>,
@@ -139,7 +137,7 @@ public:
 
     void AddDocs(SegmentOffset block_offset, const ColumnVector &col, BlockOffset offset, BlockOffset row_count);
 
-    void Dump(BufferObj *buffer_obj, size_t *dump_size = nullptr);
+    void Dump(BMPIndexFileWorker *index_file_worker, size_t *dump_size = nullptr);
 
     const ChunkIndexMetaInfo GetChunkIndexMetaInfo() const override;
 
@@ -151,10 +149,10 @@ public:
     BMPHandlerPtr &get_ref() { return bmp_handler_; }
 
 private:
-    RowID begin_row_id_ = {};
-    BMPHandlerPtr bmp_handler_ = nullptr;
-    mutable bool own_memory_ = true;
-    mutable BufferHandle chunk_handle_{};
+    RowID begin_row_id_;
+    BMPHandlerPtr bmp_handler_{};
+    mutable bool own_memory_{true};
+    mutable BMPIndexFileWorker *index_file_worker_{};
 };
 
 } // namespace infinity

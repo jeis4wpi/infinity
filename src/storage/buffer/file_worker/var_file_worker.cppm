@@ -16,50 +16,23 @@ export module infinity_core:var_file_worker;
 
 import :file_worker;
 import :file_worker_type;
-import :buffer_obj;
 import :persistence_manager;
+import :var_buffer;
 
 namespace infinity {
 
-export class VarFileWorker : public FileWorker {
-public:
-    explicit VarFileWorker(std::shared_ptr<std::string> data_dir,
-                           std::shared_ptr<std::string> temp_dir,
-                           std::shared_ptr<std::string> file_dir,
-                           std::shared_ptr<std::string> file_name,
-                           size_t buffer_size,
-                           PersistenceManager *persistence_manager);
+export struct VarFileWorker : FileWorker {
+    static constexpr VarBuffer *has_cache_manager_{};
+    explicit VarFileWorker(std::shared_ptr<std::string> file_path, size_t buffer_size);
 
-    virtual ~VarFileWorker() override;
+    ~VarFileWorker();
 
-public:
-    void SetBufferObj(BufferObj *buffer_obj) { buffer_obj_ = buffer_obj; }
+    [[nodiscard]] FileWorkerType Type() const { return FileWorkerType::kVarFile; }
 
-    void AllocateInMemory() override;
+    bool Write(std::span<VarBuffer> data, std::unique_ptr<LocalFileHandle> &file_handle, bool &prepare_success, const FileWorkerSaveCtx &ctx);
+    bool WriteSnapshot(std::span<VarBuffer> data, std::unique_ptr<LocalFileHandle> &file_handle, bool &prepare_success, const FileWorkerSaveCtx &ctx);
 
-    void FreeInMemory() override;
-
-    size_t GetMemoryCost() const override;
-
-    size_t GetBufferSize() const { return buffer_size_; }
-
-    void SetBufferSize(size_t buffer_size) { buffer_size_ = buffer_size; }
-
-    FileWorkerType Type() const override { return FileWorkerType::kVarFile; }
-
-protected:
-    bool WriteToFileImpl(bool to_spill, bool &prepare_success, const FileWorkerSaveCtx &ctx) override;
-    bool WriteSnapshotFileImpl(size_t row_cnt, size_t data_size, bool &prepare_success, const FileWorkerSaveCtx &ctx = {}) override;
-
-    void ReadFromFileImpl(size_t file_size, bool from_spill) override;
-
-    bool ReadFromMmapImpl(const void *ptr, size_t size) override;
-
-    void FreeFromMmapImpl() override;
-
-private:
-    size_t buffer_size_ = 0;
-    BufferObj *buffer_obj_ = nullptr;
+    void Read(std::shared_ptr<VarBuffer> &data, std::unique_ptr<LocalFileHandle> &file_handle, size_t file_size);
 };
 
 } // namespace infinity

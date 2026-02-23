@@ -106,6 +106,12 @@ void WalManager::Stop() {
 
     bottom_executor_->Stop();
 
+    // pop all the entries in the queue. and notify the condition variable.
+    new_wait_flush_.Enqueue(nullptr);
+
+    LOG_TRACE("Stop the new flush thread");
+    new_flush_thread_.join();
+
     LOG_TRACE("Begin to stop txn manager.");
     // Notify txn manager to stop.
     if (NewTxnManager *new_txn_mgr = storage_->new_txn_manager(); new_txn_mgr) {
@@ -113,12 +119,6 @@ void WalManager::Stop() {
     } else {
         UnrecoverableError("WAL manager stop failed: txn manager is nullptr");
     }
-
-    // pop all the entries in the queue. and notify the condition variable.
-    new_wait_flush_.Enqueue(nullptr);
-
-    LOG_TRACE("Stop the new flush thread");
-    new_flush_thread_.join();
 
     ofs_.close();
     LOG_INFO("WAL manager is stopped.");
@@ -187,7 +187,7 @@ std::vector<std::shared_ptr<std::string>> WalManager::GetDiffWalEntryString(TxnT
             }
             LOG_INFO(wal_entry->ToString());
 
-            WalCmdCheckpoint *checkpoint_cmd = nullptr;
+            WalCmdCheckpoint *checkpoint_cmd{};
             if (wal_entry->IsCheckPoint(checkpoint_cmd)) {
                 max_checkpoint_ts = checkpoint_cmd->max_commit_ts_;
                 std::string catalog_path = fmt::format("{}/{}", data_path_, "catalog");
@@ -250,7 +250,7 @@ void WalManager::NewFlush() {
     LOG_TRACE("WalManager::Flush log mainloop begin");
 
     std::deque<NewTxn *> txn_batch{};
-    ClusterManager *cluster_manager = nullptr;
+    ClusterManager *cluster_manager{};
     while (running_.load()) {
         new_wait_flush_.DequeueBulk(txn_batch);
         if (txn_batch.empty()) {
@@ -772,7 +772,7 @@ std::vector<std::shared_ptr<WalEntry>> WalManager::CollectWalEntries() const {
 
             LOG_TRACE(wal_entry->ToString());
 
-            WalCmd *cmd = nullptr;
+            WalCmd *cmd{};
             wal_entries.push_back(wal_entry);
             if (wal_entry->IsCheckPoint(cmd)) {
                 if (cmd->GetType() == WalCommandType::CHECKPOINT_V2) {

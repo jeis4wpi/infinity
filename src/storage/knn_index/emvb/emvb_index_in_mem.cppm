@@ -15,22 +15,23 @@
 export module infinity_core:emvb_index_in_mem;
 
 import :roaring_bitmap;
+import :file_worker;
+import :index_file_worker;
 
 import column_def;
 import internal_types;
 
 namespace infinity {
 
-class BufferManager;
 // class ColumnDef;
 class IndexBase;
 class EMVBIndex;
 struct BlockIndex;
-class ColumnVector;
-class BufferObj;
+struct ColumnVector;
 class KVInstance;
 struct ChunkIndexMetaInfo;
 class MetaCache;
+class EMVBIndexFileWorker;
 
 using EMVBInMemQueryResultType = std::tuple<u32, std::unique_ptr<f32[]>, std::unique_ptr<u32[]>>;
 
@@ -54,9 +55,9 @@ export class EMVBIndexInMem {
     u32 build_index_threshold_ = 0; // bar for building index
 
 public:
-    std::string db_name_{};
-    std::string table_name_{};
-    std::string index_name_{};
+    std::string db_name_;
+    std::string table_name_;
+    std::string index_name_;
     SegmentID segment_id_ = -1;
 
     static std::shared_ptr<EMVBIndexInMem>
@@ -80,7 +81,7 @@ public:
 
     void Insert(const ColumnVector &col, u32 row_offset, u32 row_count, KVInstance &kv_instance, TxnTimeStamp begin_ts, MetaCache *meta_cache);
 
-    void Dump(BufferObj *buffer_obj);
+    void Dump(EMVBIndexFileWorker *index_file_worker);
 
     // return id: offset in the segment
     std::variant<std::pair<u32, u32>, EMVBInMemQueryResultType> SearchWithBitmask(const f32 *query_ptr,

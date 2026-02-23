@@ -7,7 +7,7 @@ from infinity.errors import ErrorCode
 
 class TestDatabaseSnapshotRestart:
     """Test database snapshot functionality with restart scenarios"""
-    
+
     def test_database_snapshot_with_indexes_restart(self, infinity_runner: InfinityRunner):
         """Test snapshot with complex indexes across restarts"""
         config1 = "test/data/config/restart_test/test_database_snapshot_restart/1.toml"
@@ -57,14 +57,14 @@ class TestDatabaseSnapshotRestart:
                 "idx_name", index.IndexInfo("name", index.IndexType.FullText)
             )
             assert res.error_code == ErrorCode.OK
-            
+
             res = table_obj.create_index(
                 "idx_vector", index.IndexInfo("vector", index.IndexType.Hnsw, {
                     "M": "16", "ef_construction": "20", "metric": "l2", "block_size": "1"
                 })
             )
             assert res.error_code == ErrorCode.OK
-            
+
             # Note: HNSW indexes are not supported on sparse vector columns
             # res = table_obj.create_index(
             #     "idx_sparse", index.IndexInfo("sparse_vector", index.IndexType.Hnsw, {
@@ -95,16 +95,16 @@ class TestDatabaseSnapshotRestart:
         def part2(infinity_obj):
             # breakpoint()
             db = infinity_obj.get_database("test_db")
-            
-            
+
+
             # Test index functionality after restart
             res = db.get_table("index_table").output(["id", "name"]).filter("score > 500").to_df()
             assert len(res) > 0
-            
+
             # Test sparse vector search
             # res = db.get_table("index_table").output(["id", "sparse_vector"]).filter("id < 100").to_df()
             # assert len(res) == 100
-            
+
             # Create a new table after restart
             new_table_obj = db.create_table(
                 "new_table_after_restart",
@@ -115,7 +115,7 @@ class TestDatabaseSnapshotRestart:
                     "vector": {"type": "vector,64,float"}
                 }
             )
-            
+
             # Insert data into the new table
             new_data = []
             for i in range(100):
@@ -125,28 +125,28 @@ class TestDatabaseSnapshotRestart:
                     "value": float(i) * 1.5,
                     "vector": [float(j) for j in range(64)]
                 })
-            
+
             res = new_table_obj.insert(new_data)
             assert res.error_code == ErrorCode.OK
-            
+
             # Verify the new table has data
             res = new_table_obj.output(["count(*)"]).to_df()
             print(res)
-            
+
             # Create an index on the new table
             res = new_table_obj.create_index(
                 "idx_new_name", index.IndexInfo("name", index.IndexType.FullText)
             )
             assert res.error_code == ErrorCode.OK
-            
+
             # Test the new table functionality
             res = new_table_obj.output(["id", "name"]).filter("value > 50").to_df()
             assert len(res) > 0
-            
+
             # Delete the new table
             res = db.drop_table("new_table_after_restart", ConflictType.Error)
             assert res.error_code == ErrorCode.OK
-            
+
             # Verify the table is deleted
             try:
                 db.get_table("new_table_after_restart")
@@ -164,11 +164,11 @@ class TestDatabaseSnapshotRestart:
         def part3(infinity_obj):
             # breakpoint()
             db = infinity_obj.get_database("test_db")
-            
+
             # Verify the original table still exists and works
             res = db.get_table("index_table").output(["id", "name"]).filter("score > 500").to_df()
             assert len(res) > 0
-            
+
             # Create another new table after second restart
             another_table_obj = db.create_table(
                 "another_table",
@@ -178,7 +178,7 @@ class TestDatabaseSnapshotRestart:
                     "amount": {"type": "float"}
                 }
             )
-            
+
             # Insert data
             another_data = []
             for i in range(50):
@@ -187,18 +187,18 @@ class TestDatabaseSnapshotRestart:
                     "description": f"item_{i}",
                     "amount": float(i) * 10.0
                 })
-            
+
             res = another_table_obj.insert(another_data)
             assert res.error_code == ErrorCode.OK
-            
+
             # Verify data
             res = another_table_obj.output(["count(*)"]).to_df()
             print(res)
-            
+
             # Test query
             res = another_table_obj.output(["id", "description"]).filter("amount > 200").to_df()
             assert len(res) > 0
-            
+
             # Clean up
             res = db.drop_table("another_table", ConflictType.Error)
             assert res.error_code == ErrorCode.OK

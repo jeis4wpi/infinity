@@ -19,8 +19,6 @@ module;
 module infinity_core:ut.test_optimize;
 
 import :ut.base_test;
-import :logger;
-import third_party;
 import :infinity_context;
 import :table_def;
 import :column_vector;
@@ -30,7 +28,6 @@ import :index_secondary;
 import :infinity_exception;
 import :bg_task;
 import :wal_manager;
-import :buffer_manager;
 import :background_process;
 import :txn_state;
 import :new_txn_manager;
@@ -47,8 +44,9 @@ import :mem_index;
 import :status;
 import :new_txn;
 import :hnsw_handler;
-import :buffer_obj;
 import :storage;
+
+import third_party;
 
 import compilation_config;
 import global_resource_usage;
@@ -95,8 +93,8 @@ INSTANTIATE_TEST_SUITE_P(TestWithDifferentParams,
                                            (std::string(test_data_path()) + "/config/test_optimize_vfs_off.toml").c_str()));
 
 TEST_P(OptimizeKnnTest, test_hnsw_optimize) {
-    Storage *storage = InfinityContext::instance().storage();
-    NewTxnManager *txn_mgr = storage->new_txn_manager();
+    auto *storage = InfinityContext::instance().storage();
+    auto *txn_mgr = storage->new_txn_manager();
 
     auto db_name = std::make_shared<std::string>("default_db");
 
@@ -217,15 +215,15 @@ TEST_P(OptimizeKnnTest, test_hnsw_optimize) {
         ChunkID chunk_id = 3;
         ChunkIndexMeta chunk_index_meta(chunk_id, segment_index_meta);
         {
-            ChunkIndexMetaInfo *chunk_info = nullptr;
+            ChunkIndexMetaInfo *chunk_info{};
             Status status = chunk_index_meta.GetChunkInfo(chunk_info);
             EXPECT_TRUE(status.ok());
             EXPECT_EQ(chunk_info->row_cnt_, 24);
             EXPECT_EQ(chunk_info->base_row_id_, RowID(0, 0));
         }
 
-        BufferObj *buffer_obj = nullptr;
-        status = chunk_index_meta.GetIndexBuffer(buffer_obj);
+        BMPIndexFileWorker::IndexFileWorker *file_worker{};
+        status = chunk_index_meta.GetFileWorker(file_worker);
         EXPECT_TRUE(status.ok());
 
         status = txn_mgr->CommitTxn(txn);

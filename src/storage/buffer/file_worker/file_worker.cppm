@@ -14,114 +14,313 @@
 
 module;
 
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
 export module infinity_core:file_worker;
 
 import :file_worker_type;
 import :persistence_manager;
 import :defer_op;
-import :snapshot_info;
+import :virtual_store;
+import :block_version;
+import :emvb_index;
+import :virtual_store;
+import :boost;
+// import :infinity_context;
+import :persist_result_handler;
 
 import std.compat;
 import third_party;
 
 namespace infinity {
 
-class KVInstance;
 class LocalFileHandle;
 class Status;
+export struct RawFileWorker;
+// export class FileWorkerManager;
+// export class BMPHandler;
+// using BMPHandlerPtr = BMPHandler *;
+//
+// export struct HnswHandler;
+// using HnswHandlerPtr = HnswHandler *;
+//
+// // std::shared_ptr<Foo> foo_shared = foo->shared_from_this();
+//
+// export struct HighCardinalityTag;
+// export struct LowCardinalityTag;
+// export template <typename CardinalityTag>
+// class SecondaryIndexDataBase;
+export class FileWorkerManager;
+//
+// export class IVFIndexInChunk;
+//
+// export class VarBuffer;
 
 export struct FileWorkerSaveCtx {};
 
-export class FileWorker {
-public:
-    // spill_dir_ is not init here
-    explicit FileWorker(std::shared_ptr<std::string> data_dir,
-                        std::shared_ptr<std::string> temp_dir,
-                        std::shared_ptr<std::string> file_dir,
-                        std::shared_ptr<std::string> file_name,
-                        PersistenceManager *persistence_manager);
+export struct FileWorkerTag {};
+
+// export template <typename FileWorkerT>
+// concept FileWorkerConcept = std::derived_from<FileWorkerT, FileWorkerTag> && requires(FileWorkerT file_worker) {
+//     file_worker.Read();
+//     file_worker.Write();
+// };
+//
+// export struct DataFileWorkerV2 : FileWorkerTag {
+//     void Write() {}
+//     void Read() {}
+// };
+//
+// export struct VarFileWorkerV2 : FileWorkerTag {
+//     void Write() {}
+//     void Read() {}
+// };
+//
+// export struct VersionFileWorkerV2 : FileWorkerTag {
+//     void Write() {}
+//     void Read() {}
+// };
+
+export struct FileWorker {
+    explicit FileWorker(std::shared_ptr<std::string> file_path);
 
     // No destruct here
-    virtual ~FileWorker();
+    ~FileWorker() = default;
 
-public:
-    [[nodiscard]] bool WriteToFile(bool to_spill, const FileWorkerSaveCtx &ctx = {});
+    [[nodiscard]] std::string GetPath() const;
 
-    bool WriteSnapshotFile(const std::shared_ptr<TableSnapshotInfo> &table_snapshot_info,
-                           bool use_memory,
-                           const FileWorkerSaveCtx &ctx = {},
-                           size_t row_cnt = 0,
-                           size_t data_size = 0);
-    // bool WriteSnapshotFile1(const std::shared_ptr<TableSnapshotInfo> &table_snapshot_info,
-    //                         bool use_memory,
-    //                         const FileWorkerSaveCtx &ctx = {},
-    //                         size_t data_size = 0);
+    [[nodiscard]] std::string GetWorkingPath() const;
 
-    void ReadFromFile(bool from_spill);
-    void ReadFromSnapshotFile(const std::string &snapshot_name, bool from_spill);
+    template <typename FileWorkerT, typename PayloadT>
+    static bool Write(FileWorkerT file_worker, PayloadT data, const FileWorkerSaveCtx &ctx = {}) {
+        // boost::unique_lock l(boost_rw_mutex_);
 
-    void MoveFile();
+        auto working_path = file_worker->GetWorkingPath();
+        auto [file_handle, status] = VirtualStore::Open(working_path, FileAccessMode::kReadWrite);
+        if (!status.ok()) {
+            // yee todo
+            // UnrecoverableError(status.message());
+        }
 
-    virtual void AllocateInMemory() = 0;
+        bool prepare_success = false;
 
-    virtual void FreeInMemory() = 0;
+        bool all_save = file_worker->Write(data, file_handle, prepare_success, ctx);
+        close(file_handle->fd());
+        return all_save;
+    }
 
-    virtual size_t GetMemoryCost() const = 0;
+    // template <typename FileWorkerT, typename PayloadT>
+    // static void Read<BmpIndexFileW>(FileWorkerT file_worker, PayloadT &data);
 
-    virtual FileWorkerType Type() const = 0;
+    template <typename FileWorkerT, typename PayloadT>
+    static void Read(FileWorkerT file_worker, PayloadT &data) {
+        std::unique_lock l(file_worker->mutex_);
+        size_t file_size{};
 
-    void *GetData() const { return data_; }
+        if (file_worker->mmap_) {
+            std::unique_ptr<LocalFileHandle> file_handle;
+            file_worker->Read(data, file_handle, file_size);
+            return;
+        }
 
-    void SetData(void *data);
+        auto working_path = file_worker->GetWorkingPath();
+        auto data_path = file_worker->GetPath();
+        // auto file_worker_map = InfinityContext::instance().storage()->fileworker_manager();
+        if (VirtualStore::Exists(working_path)) {
+            auto [file_handle, status] = VirtualStore::Open(working_path, FileAccessMode::kReadWrite);
+            if (!status.ok()) {
+                std::unique_ptr<LocalFileHandle> file_handle;
+                file_worker->Read(data, file_handle, file_size);
+                // UnrecoverableError("??????"); // AddSegmentVersion->GetData->Read
+                return;
+            }
+            file_size = file_handle->FileSize();
+            file_worker->Read(data, file_handle, file_size);
+            close(file_handle->fd());
+            return;
+        }
+        auto persistence_manager = file_worker->persistence_manager_;
+        if (persistence_manager) {
+            auto result = persistence_manager->GetObjCache(data_path);
+            auto obj_addr = result.obj_addr_;
+            auto true_file_path = fmt::format("{}/{}", persistence_manager->workspace(), obj_addr.obj_key_);
+            if (obj_addr.Valid()) {
+                VirtualStore::CopyRange(true_file_path, working_path, obj_addr.part_offset_, 0, obj_addr.part_size_);
+                obj_addr.obj_key_.clear();
+                auto [file_handle, status] = VirtualStore::Open(working_path, FileAccessMode::kReadWrite);
+                if (!status.ok()) {
+                    std::unique_ptr<LocalFileHandle> file_handle;
+                    file_worker->Read(data, file_handle, file_size);
+                    // UnrecoverableError("??????"); // AddSegmentVersion->GetData->Read
+                    return;
+                }
+                file_worker->Read(data, file_handle, obj_addr.part_size_);
+                close(file_handle->fd());
+                return;
+            }
+        }
+        if (VirtualStore::Exists(data_path, true)) {
+            auto [file_handle, status] = VirtualStore::Open(data_path, FileAccessMode::kReadWrite);
+            if (!status.ok()) {
+                std::unique_ptr<LocalFileHandle> file_handle;
+                file_worker->Read(data, file_handle, file_size);
+                // UnrecoverableError("??????"); // AddSegmentVersion->GetData->Read
+                return;
+            }
+            file_size = file_handle->FileSize();
 
-    virtual void SetDataSize(size_t size);
+            VirtualStore::CopyRange(data_path, working_path, 0, 0, file_size);
+            file_worker->Read(data, file_handle, file_size);
+            close(file_handle->fd());
+            return;
+        }
+        std::unique_ptr<LocalFileHandle> file_handle;
+        file_worker->Read(data, file_handle, file_size);
+    }
 
-    // Get an absolute file path. As key of a buffer handle.
-    std::string GetFilePath() const;
+    template <typename FileWorkerT>
+    static void MoveFile(FileWorkerT *file_worker) {
+        // boost::unique_lock l(boost_rw_mutex_);
+        std::unique_lock l(file_worker->mutex_);
+        msync(file_worker->mmap_, file_worker->mmap_size_, MS_SYNC);
+        auto working_path = file_worker->GetWorkingPath();
+        auto data_path = file_worker->GetPath();
 
-    Status CleanupFile() const;
+        if (file_worker->persistence_manager_) {
+            PersistResultHandler handler(file_worker->persistence_manager_);
+            if (!VirtualStore::Exists(working_path)) {
+                return;
+            }
+            auto persist_result = file_worker->persistence_manager_->Persist(data_path, working_path);
+            handler.HandleWriteResult(persist_result);
 
-    void CleanupTempFile() const;
+            // obj_addr_ = persist_result.obj_addr_;
 
-protected:
-    virtual bool WriteToFileImpl(bool to_spill, bool &prepare_success, const FileWorkerSaveCtx &ctx = {}) = 0;
+            // if (file_worker->Type() == FileWorkerType::kRawFile) {
+            if constexpr (std::same_as<FileWorkerT, RawFileWorker>) {
+                auto temp_dict_path =
+                    fmt::format("/var/infinity/tmp/{}.dic", file_worker->rel_file_path_->substr(0, file_worker->rel_file_path_->find_first_of('.')));
+                auto temp_posting_path =
+                    fmt::format("/var/infinity/tmp/{}.pos", file_worker->rel_file_path_->substr(0, file_worker->rel_file_path_->find_first_of('.')));
 
-    virtual bool WriteSnapshotFileImpl(size_t row_cnt, size_t data_size, bool &prepare_success, const FileWorkerSaveCtx &ctx = {});
+                auto data_dict_path =
+                    fmt::format("/var/infinity/data/{}.dic", file_worker->rel_file_path_->substr(0, file_worker->rel_file_path_->find_first_of('.')));
+                auto data_posting_path =
+                    fmt::format("/var/infinity/data/{}.pos", file_worker->rel_file_path_->substr(0, file_worker->rel_file_path_->find_first_of('.')));
 
-    virtual void ReadFromFileImpl(size_t file_size, bool from_spill) = 0;
+                auto persist_result2 = file_worker->persistence_manager_->Persist(data_dict_path, temp_dict_path);
+                auto persist_result3 = file_worker->persistence_manager_->Persist(data_posting_path, temp_posting_path);
+            }
+        } else {
+            if (!VirtualStore::Exists(working_path)) {
+                return;
+            }
+            auto data_path_parent = VirtualStore::GetParentPath(data_path);
+            if (!VirtualStore::Exists(data_path_parent)) {
+                VirtualStore::MakeDirectory(data_path_parent);
+            }
 
-    std::string ChooseFileDir(bool spill) const;
+            VirtualStore::Copy(working_path, data_path);
+            // if (file_worker->Type() == FileWorkerType::kRawFile) {
+            if constexpr (std::same_as<FileWorkerT, RawFileWorker>) {
+                auto working_dict_path =
+                    fmt::format("/var/infinity/tmp/{}.dic", file_worker->rel_file_path_->substr(0, file_worker->rel_file_path_->find_first_of('.')));
+                auto working_posting_path =
+                    fmt::format("/var/infinity/tmp/{}.pos", file_worker->rel_file_path_->substr(0, file_worker->rel_file_path_->find_first_of('.')));
 
-    std::pair<std::optional<DeferFn<std::function<void()>>>, std::string> GetFilePathInner(bool spill);
+                auto data_dict_path =
+                    fmt::format("/var/infinity/data/{}.dic", file_worker->rel_file_path_->substr(0, file_worker->rel_file_path_->find_first_of('.')));
+                auto data_posting_path =
+                    fmt::format("/var/infinity/data/{}.pos", file_worker->rel_file_path_->substr(0, file_worker->rel_file_path_->find_first_of('.')));
 
-public:
-    const std::shared_ptr<std::string> data_dir_{};
-    const std::shared_ptr<std::string> temp_dir_{};
-    const std::shared_ptr<std::string> file_dir_{};
-    const std::shared_ptr<std::string> file_name_{};
+                VirtualStore::Copy(working_dict_path, data_dict_path);
+                VirtualStore::Copy(working_posting_path, data_posting_path);
+            }
+        }
+    }
+
+    // virtual FileWorkerType Type() const = 0;
+
+    template <typename FileWorkerT>
+    static Status CleanupFile(FileWorkerT *file_worker) {
+        std::unique_lock l(file_worker->mutex_);
+        auto status = VirtualStore::DeleteFile(file_worker->GetWorkingPath());
+        // if (file_worker->Type() == FileWorkerType::kRawFile) {
+        if constexpr (std::same_as<FileWorkerT, RawFileWorker>) {
+            auto temp_dict_path =
+                fmt::format("/infinity/tmp/{}.dic", file_worker->rel_file_path_->substr(0, file_worker->rel_file_path_->find_first_of('.')));
+            auto temp_posting_path =
+                fmt::format("/infinity/tmp/{}.pos", file_worker->rel_file_path_->substr(0, file_worker->rel_file_path_->find_first_of('.')));
+
+            auto data_dict_path =
+                fmt::format("/infinity/data/{}.dic", file_worker->rel_file_path_->substr(0, file_worker->rel_file_path_->find_first_of('.')));
+            auto data_posting_path =
+                fmt::format("/infinity/data/{}.pos", file_worker->rel_file_path_->substr(0, file_worker->rel_file_path_->find_first_of('.')));
+
+            status = VirtualStore::DeleteFile(temp_dict_path);
+            status = VirtualStore::DeleteFile(temp_posting_path);
+            if (file_worker->persistence_manager_) {
+                PersistResultHandler handler{file_worker->persistence_manager_};
+                {
+                    auto result_data = file_worker->persistence_manager_->Cleanup(file_worker->GetPath());
+                    // if (!result_data.obj_addr_.Valid()) {
+                    //     return Status::OK();
+                    // }
+                    handler.HandleWriteResult(result_data);
+                }
+                {
+                    auto result_data = file_worker->persistence_manager_->Cleanup(data_dict_path);
+                    // if (!result_data.obj_addr_.Valid()) {
+                    //     return Status::OK();
+                    // }
+                    handler.HandleWriteResult(result_data);
+                }
+                {
+                    auto result_data = file_worker->persistence_manager_->Cleanup(data_posting_path);
+                    // if (!result_data.obj_addr_.Valid()) {
+                    //     return Status::OK();
+                    // }
+                    handler.HandleWriteResult(result_data);
+                }
+            } else {
+                status = VirtualStore::DeleteFile(file_worker->GetPath());
+                status = VirtualStore::DeleteFile(data_dict_path);
+                status = VirtualStore::DeleteFile(data_posting_path);
+            }
+        } else {
+            if (file_worker->persistence_manager_) {
+                PersistResultHandler handler{file_worker->persistence_manager_};
+                auto result_data = file_worker->persistence_manager_->Cleanup(file_worker->GetPath());
+                // if (!result_data.obj_addr_.Valid()) {
+                //     return Status::OK();
+                // }
+                handler.HandleWriteResult(result_data);
+
+            } else {
+                status = VirtualStore::DeleteFile(file_worker->GetPath());
+            }
+        }
+        // if (Type() == FileWorkerType::kHNSWIndexFile) {
+        //     auto cache_manager = InfinityContext::instance().storage()->fileworker_manager()->hnsw_map_.cache_manager_;
+        //     cache_manager.Evict(*rel_file_path_);
+        // }
+        // if (Type() == FileWorkerType::kVersionDataFile) {
+        //     auto cache_manager = InfinityContext::instance().storage()->fileworker_manager()->version_map_.cache_manager_;
+        //     cache_manager.Evict(*rel_file_path_);
+        // }
+        return Status::OK();
+    }
+
+    // mutable boost::shared_mutex boost_rw_mutex_;
+    mutable std::mutex mutex_;
+    std::shared_ptr<std::string> rel_file_path_;
     PersistenceManager *persistence_manager_{};
-    ObjAddr obj_addr_{};
-
-protected:
-    void *data_{nullptr};
-    std::unique_ptr<LocalFileHandle> file_handle_{nullptr};
-
-public:
-    void *GetMmapData() const { return mmap_data_; }
-
-    void Mmap();
-
-    void Munmap();
-
-    void MmapNotNeed();
-
-protected:
-    virtual bool ReadFromMmapImpl([[maybe_unused]] const void *ptr, [[maybe_unused]] size_t size);
-
-    virtual void FreeFromMmapImpl();
-
-protected:
-    u8 *mmap_addr_{nullptr};
-    u8 *mmap_data_{nullptr};
+    FileWorkerManager *file_worker_manager_{};
+    void *mmap_{};
+    // std::atomic_uintptr_t mmap_;
+    size_t mmap_size_{};
+    // std::atomic_size_t mmap_size_;
 };
 } // namespace infinity

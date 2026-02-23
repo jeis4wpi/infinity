@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-module;
-
 export module infinity_core:new_txn;
 
 import :txn_state;
@@ -65,8 +63,6 @@ struct WalCmdRestoreTableSnapshot;
 struct WalCmdRestoreDatabaseSnapshot;
 struct WalCmdRestoreSystemSnapshot;
 
-class BufferObj;
-
 class ColumnMeta;
 class BlockMeta;
 class SegmentMeta;
@@ -108,8 +104,9 @@ struct CreateTableSnapshotTxnStore;
 struct CreateDBSnapshotTxnStore;
 struct CreateSystemSnapshotTxnStore;
 struct CleanupTxnStore;
-class BufferManager;
 class IndexBase;
+class IndexSecondaryFunctional;
+class SecondaryIndexInMem;
 struct DataBlock;
 class TableDef;
 struct TableInfo;
@@ -124,8 +121,9 @@ struct CheckpointTxnStore;
 struct MetaKey;
 struct MetaBaseCache;
 struct CacheInfo;
-class NewCatalog;
+struct NewCatalog;
 class NewTxnManager;
+struct IndexFileWorker;
 
 export struct CheckpointOption {
     TxnTimeStamp checkpoint_ts_ = 0;
@@ -373,7 +371,7 @@ public:
     Status Checkpoint(TxnTimeStamp last_ckp_ts, bool auto_checkpoint);
 
     // Getter
-    [[nodiscard]] BufferManager *buffer_mgr() const { return buffer_mgr_; }
+    [[nodiscard]] FileWorkerManager *fileworker_mgr() const { return fileworker_mgr_; }
 
     [[nodiscard]] TransactionID TxnID() const;
 
@@ -440,7 +438,7 @@ public:
     TxnTimeStamp GetCurrentCkpTS() const;
 
 private:
-    void CheckTxnStatus();
+    void CheckTxnStatus() const;
 
     void CheckTxn(const std::string &db_name);
 
@@ -547,6 +545,23 @@ private:
                                        std::shared_ptr<ColumnDef> column_def,
                                        std::vector<ChunkID> &new_chunk_ids);
 
+    Status PopulateSecondaryFunctionalIndexInner(std::shared_ptr<IndexBase> index_base,
+                                                 SegmentIndexMeta &segment_index_meta,
+                                                 SegmentMeta &segment_meta,
+                                                 size_t segment_row_cnt,
+                                                 ColumnID column_id,
+                                                 std::shared_ptr<ColumnDef> column_def,
+                                                 std::vector<ChunkID> &new_chunk_ids);
+
+    std::shared_ptr<ColumnVector>
+    ExecuteFunctionExpression(const IndexSecondaryFunctional *functional_index, const ColumnVector &col, ColumnID column_id);
+
+    std::tuple<std::shared_ptr<SecondaryIndexInMem>, Status> GetSecondaryIndexInMem(SegmentIndexMeta &segment_index_meta,
+                                                                                    DataType secondary_index_type,
+                                                                                    RowID base_row_id,
+                                                                                    std::shared_ptr<MemIndex> mem_index,
+                                                                                    SecondaryIndexCardinality cardinality);
+
     Status PopulateBMPIndexInner(std::shared_ptr<IndexBase> index_base,
                                  SegmentIndexMeta &segment_index_meta,
                                  SegmentMeta &segment_meta,
@@ -573,19 +588,13 @@ private:
                             SegmentMeta &segment_meta,
                             RowID base_rowid,
                             u32 row_cnt,
-                            BufferObj *buffer_obj);
+                            IndexFileWorker *index_file_worker);
 
     Status AlterSegmentIndexByParams(SegmentIndexMeta &segment_index_meta, const std::vector<std::unique_ptr<InitParameter>> &params);
 
     Status ReplayAlterIndexByParams(WalCmdAlterIndexV2 *alter_index_cmd);
 
     Status DumpSegmentMemIndex(SegmentIndexMeta &segment_index_meta, const ChunkID &new_chunk_id);
-    // Status DumpSegmentMemIndex(SegmentIndexMeta &segment_index_meta,
-    //                            const ChunkID &new_chunk_id,
-    //                            const std::shared_ptr<TableSnapshotInfo> &table_snapshot_info);
-
-    Status CheckpointDB(DBMeta &db_meta, const CheckpointOption &option, CheckpointTxnStore *ckp_txn_store);
-    Status CheckpointTable(TableMeta &table_meta, const CheckpointOption &option, CheckpointTxnStore *ckp_txn_store);
 
     Status CreateSystemSnapshotFile(std::shared_ptr<SystemSnapshotInfo> system_snapshot_info, const SnapshotOption &option);
     Status CreateDBSnapshotFile(std::shared_ptr<DatabaseSnapshotInfo> db_snapshot_info, const SnapshotOption &option);
@@ -634,7 +643,6 @@ private:
     Status CommitSegmentVersion(WalSegmentInfo &segment_info, SegmentMeta &segment_meta);
     Status FlushVersionFile(BlockMeta &block_meta, TxnTimeStamp save_ts);
     Status FlushColumnFiles(BlockMeta &block_meta, TxnTimeStamp save_ts);
-    Status TryToMmap(BlockMeta &block_meta, TxnTimeStamp save_ts, bool *to_mmap = nullptr);
 
     Status IncrLatestID(std::string &id_str, std::string_view id_name) const;
 
@@ -663,6 +671,7 @@ private:
     bool CheckConflictTxnStore(const CreateDBSnapshotTxnStore &txn_store, NewTxn *previous_txn, std::string &cause, bool &retry_query);
     bool CheckConflictTxnStore(const CreateSystemSnapshotTxnStore &txn_store, NewTxn *previous_txn, std::string &cause, bool &retry_query);
     bool CheckConflictTxnStore(const CleanupTxnStore &txn_store, NewTxn *previous_txn, std::string &cause, bool &retry_query);
+    bool CheckConflictTxnStore(const CheckpointTxnStore &txn_store, NewTxn *previous_txn, std::string &cause, bool &retry_query);
 
 public:
     bool IsReplay() const;
@@ -732,14 +741,14 @@ public:
                                 const std::string &table_name,
                                 std::shared_ptr<DataBlock> input_block,
                                 const u64 &input_block_idx,
-                                std::vector<std::string> *object_paths = nullptr);
+                                std::vector<std::string> *file_worker_paths = nullptr);
 
     Status PrintVersionInBlock(BlockMeta &block_meta, const std::vector<BlockOffset> &block_offsets, bool ignore_invisible);
 
 private:
     // Reference to external class
     NewTxnManager *txn_mgr_{};
-    BufferManager *buffer_mgr_{}; // This BufferManager ptr Only for replaying wal
+    FileWorkerManager *fileworker_mgr_{}; // This FileWorkerManager ptr Only for replaying wal
     NewCatalog *new_catalog_{};
 
     // Used to store the local data in this transaction

@@ -16,11 +16,7 @@ module;
 
 #include <cassert>
 
-#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
-#include <xmmintrin.h>
-#elif defined(__GNUC__) && defined(__aarch64__)
-#include <simde/x86/sse.h>
-#endif
+#include <common/simd/simd_functions.h>
 
 export module infinity_core:lvq_vec_store;
 
@@ -86,10 +82,10 @@ public:
 
 public:
     LVQVecStoreMetaBase() : dim_(0), compress_data_size_(0), normalize_(false) {}
-    LVQVecStoreMetaBase(This &&other)
+    LVQVecStoreMetaBase(This &&other) noexcept
         : dim_(std::exchange(other.dim_, 0)), compress_data_size_(std::exchange(other.compress_data_size_, 0)), mean_(std::move(other.mean_)),
           global_cache_(std::exchange(other.global_cache_, GlobalCacheType())), normalize_(other.normalize_) {}
-    LVQVecStoreMetaBase &operator=(This &&other) {
+    LVQVecStoreMetaBase &operator=(This &&other) noexcept {
         if (this != &other) {
             dim_ = std::exchange(other.dim_, 0);
             compress_data_size_ = std::exchange(other.compress_data_size_, 0);
@@ -105,11 +101,27 @@ public:
     // Get size of vector in search
     size_t GetVecSizeInBytes() const { return compress_data_size_; }
 
-    void Save(LocalFileHandle &file_handle) const {
-        file_handle.Append(&dim_, sizeof(dim_));
-        file_handle.Append(mean_.get(), sizeof(MeanType) * dim_);
+    size_t CalcSize() const {
+        size_t ret{};
+
+        ret += sizeof(dim_);
+        ret += sizeof(MeanType) * dim_;
         if constexpr (!std::same_as<GlobalCacheType, std::tuple<>>) {
-            file_handle.Append(&global_cache_, sizeof(GlobalCacheType));
+            ret += sizeof(GlobalCacheType);
+        }
+        return ret;
+    }
+
+    void SaveToPtr(void *&mmap_p, size_t &offset) const {
+        std::memcpy((char *)mmap_p + offset, &dim_, sizeof(dim_));
+        offset += sizeof(dim_);
+
+        std::memcpy((char *)mmap_p + offset, mean_.get(), sizeof(MeanType) * dim_);
+        offset += sizeof(MeanType) * dim_;
+
+        if constexpr (!std::same_as<GlobalCacheType, std::tuple<>>) {
+            std::memcpy((char *)mmap_p + offset, &global_cache_, sizeof(GlobalCacheType));
+            offset += sizeof(GlobalCacheType);
         }
     }
 
@@ -122,17 +134,17 @@ public:
     void CompressTo(const DataType *src, LVQData *dest) const {
         std::unique_ptr<DataType[]> normalized;
         if (normalize_) {
-            normalized = std::make_unique_for_overwrite<DataType[]>(this->dim_);
+            normalized = std::make_unique_for_overwrite<DataType[]>(dim_);
             DataType norm = 0;
-            for (size_t j = 0; j < this->dim_; ++j) {
+            for (size_t j = 0; j < dim_; ++j) {
                 DataType x = src[j];
                 norm += x * x;
             }
             norm = std::sqrt(norm);
             if (norm == 0) {
-                std::fill(normalized.get(), normalized.get() + this->dim_, 0);
+                std::fill(normalized.get(), normalized.get() + dim_, 0);
             } else {
-                for (size_t j = 0; j < this->dim_; ++j) {
+                for (size_t j = 0; j < dim_; ++j) {
                     normalized[j] = src[j] / norm;
                 }
             }
@@ -192,7 +204,7 @@ protected:
     ArrayPtr<MeanType, OwnMem> mean_;
     GlobalCacheType global_cache_;
 
-    bool normalize_{false};
+    bool normalize_{};
 
 public:
     void Dump(std::ostream &os) const {
@@ -230,17 +242,6 @@ public:
         This ret(dim);
         ret.normalize_ = normalize;
         return ret;
-    }
-
-    static This Load(LocalFileHandle &file_handle) {
-        size_t dim;
-        file_handle.Read(&dim, sizeof(dim));
-        This meta(dim);
-        file_handle.Read(meta.mean_.get(), sizeof(MeanType) * dim);
-        if constexpr (!std::is_same_v<GlobalCacheType, std::tuple<>>) {
-            file_handle.Read(&meta.global_cache_, sizeof(GlobalCacheType));
-        }
-        return meta;
     }
 
     static This LoadFromPtr(const char *&ptr) {
@@ -337,11 +338,17 @@ public:
 
     size_t GetSizeInBytes(size_t cur_vec_num, const Meta &meta) const { return cur_vec_num * meta.compress_data_size(); }
 
-    void Save(LocalFileHandle &file_handle, size_t cur_vec_num, const Meta &meta) const {
-        file_handle.Append(ptr_.get(), cur_vec_num * meta.compress_data_size());
+    static size_t CalcSize(const Meta &meta, size_t ck_size, size_t chunk_num, size_t last_chunk_size) {
+        size_t ret{};
+        for (size_t i = 0; i < chunk_num; ++i) {
+            size_t chunk_size = (i < chunk_num - 1) ? ck_size : last_chunk_size;
+            ret += chunk_size * meta.compress_data_size();
+        }
+        return ret;
     }
 
-    static void SaveToPtr(LocalFileHandle &file_handle,
+    static void SaveToPtr(void *&mmap_p,
+                          size_t &offset,
                           const std::vector<const This *> &inners,
                           const Meta &meta,
                           size_t ck_size,
@@ -349,7 +356,9 @@ public:
                           size_t last_chunk_size) {
         for (size_t i = 0; i < chunk_num; ++i) {
             size_t chunk_size = (i < chunk_num - 1) ? ck_size : last_chunk_size;
-            file_handle.Append(inners[i]->ptr_.get(), chunk_size * meta.compress_data_size());
+
+            std::memcpy((char *)mmap_p + offset, inners[i]->ptr_.get(), chunk_size * meta.compress_data_size());
+            offset += chunk_size * meta.compress_data_size();
         }
     }
 
@@ -357,7 +366,7 @@ public:
 
     QueryType GetVecToQuery(size_t idx, const Meta &meta) const { return QueryType(meta.compress_data_size(), GetVec(idx, meta)); }
 
-    void Prefetch(VertexType vec_i, const Meta &meta) const { _mm_prefetch(reinterpret_cast<const char *>(GetVec(vec_i, meta)), _MM_HINT_T0); }
+    void Prefetch(VertexType vec_i, const Meta &meta) const { SIMDPrefetch(reinterpret_cast<const void *>(GetVec(vec_i, meta))); }
 
 protected:
     ArrayPtr<char, OwnMem> ptr_;

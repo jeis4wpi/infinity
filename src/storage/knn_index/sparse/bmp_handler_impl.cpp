@@ -15,15 +15,14 @@
 module infinity_core:bmp_handler.impl;
 
 import :bmp_handler;
-import :buffer_manager;
-import :buffer_handle;
+
 import :block_column_iter;
 import :sparse_util;
 import :logger;
-import :buffer_obj;
 import :local_file_handle;
 import :chunk_index_meta;
 import :bmp_alg;
+import :bmp_index_file_worker;
 
 import sparse_info;
 import embedding_type;
@@ -313,7 +312,7 @@ void BMPIndexInMem::AddDocs(SegmentOffset block_offset, const ColumnVector &col,
     IncreaseMemoryUsageBase(mem_used);
 }
 
-void BMPIndexInMem::Dump(BufferObj *buffer_obj, size_t *dump_size_ptr) {
+void BMPIndexInMem::Dump(BMPIndexFileWorker *index_file_worker, size_t *dump_size_ptr) {
     if (!own_memory_) {
         UnrecoverableError("BMPIndexInMem::Dump() called with own_memory_ = false.");
     }
@@ -321,11 +320,9 @@ void BMPIndexInMem::Dump(BufferObj *buffer_obj, size_t *dump_size_ptr) {
         *dump_size_ptr = bmp_handler_->MemUsage();
     }
 
-    BufferHandle handle = buffer_obj->Load();
-    auto *data_ptr = static_cast<BMPHandlerPtr *>(handle.GetDataMut());
-    *data_ptr = bmp_handler_;
     own_memory_ = false;
-    chunk_handle_ = std::move(handle);
+    index_file_worker_ = std::move(index_file_worker);
+    FileWorker::Write(index_file_worker_, std::span{&bmp_handler_, 1});
 }
 
 size_t BMPIndexInMem::GetRowCount() const { return bmp_handler_->DocNum(); }

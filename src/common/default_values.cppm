@@ -334,7 +334,6 @@ export {
     constexpr std::string_view NEXT_TABLE_ID = "next_table_id";
     constexpr std::string_view NEXT_COLUMN_ID = "next_column_id";
     constexpr std::string_view NEXT_INDEX_ID = "next_index_id";
-    constexpr std::string_view NEXT_BLOCK_ID = "next_block_id";
 
     // S3 meta
     constexpr std::string_view S3_META_PREFIX = "meta";
@@ -347,7 +346,7 @@ export {
     constexpr u32 BATCH_OR_LEN = 128;
 
     constexpr int MAX_TUPLE_LENGTH = 1024;
-    constexpr size_t L1_CACHE_SIZE = 32 * KB;
+    constexpr size_t L1_DATA_CACHE_SIZE = 288 * KB;
 
     constexpr u64 DEFAULT_META_CACHE_SIZE = 8192;
 }

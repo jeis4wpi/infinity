@@ -14,19 +14,16 @@
 
 module;
 
-#include "base_statement.h"
-#include "parser.h"
 #include "unit_test/gtest_expand.h"
 
 module infinity_core:ut.explain_basic;
 
 import :ut.base_test;
+import :ut.request_test;
 import :ut.sql_runner;
 import :infinity_exception;
-import third_party;
 import :logger;
 import :infinity_context;
-import :ut.request_test;
 import :status;
 import :txn_state;
 import :new_txn_manager;
@@ -39,6 +36,8 @@ import :query_result;
 import :query_context;
 import :logical_node;
 import :logical_planner;
+
+import third_party;
 
 import global_resource_usage;
 
@@ -125,12 +124,15 @@ TEST_P(ExplainBasicTest, test1) {
     ExplainSql("select * from tb where col1 > 100 and 1 = 1", true);
     ExplainSql("select * from tb order by col1", true);
     ExplainSql("select * from tb limit 100", true);
+    ExplainSql("select min(col1), max(col1), avg(col1) from tb where 1 = 1 group by col1", true);
     ExplainSql("select * from tb where col1 > 100 and 1 = 1 order by col1 limit 100", true);
     ExplainSql("select * from tb where col1 in (100, 150, 200)", true);
     ExplainSql("select * from tb where col1 between 100 and 200", true);
     ExplainSql("select col1 from tb_embedding search match vector (col2, [0.3, 0.3, 0.2, 0.2], 'float', 'l2', 1)", true);
 
     // Explain create
+    ExplainSql("create index idx on tb(col1) using secondary", false);
+    ExplainSql("create index idx on tb(col2) using fulltext", false);
     ExplainSql("create table tb1(c1 int, c2 varchar)", false);
     ExplainSql("create database db1", false);
     ExplainSql("create collection c1", false);
@@ -160,7 +162,7 @@ TEST_P(ExplainBasicTest, test1) {
     ExplainSql("show table tb segment 0 block 0 column 0", true);
     ExplainSql("show table tb indexes", true);
     ExplainSql("show checkpoint", true);
-    ExplainSql("show buffer", true);
+    // ExplainSql("show buffer", true); // deprecated
     ExplainSql("show tasks", true);
     ExplainSql("show configs", true);
     ExplainSql("show config version", true);

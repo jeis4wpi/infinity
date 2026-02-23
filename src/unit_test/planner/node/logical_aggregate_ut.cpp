@@ -14,8 +14,6 @@
 
 module;
 
-#include "base_statement.h"
-#include "parser.h"
 #include "unit_test/gtest_expand.h"
 
 module infinity_core:ut.logical_aggregate;
@@ -111,4 +109,18 @@ TEST_P(LogicalAggregateTest, test1) {
         bool ok = HandleQueryResult(query_result);
         EXPECT_TRUE(ok);
     }
+
+    // {
+    //     std::string sql = "select min(case when col2 = 'abc' then col1 else 1 end) from tb";
+    //     std::unique_ptr<QueryContext> query_context = MakeQueryContext();
+    //     QueryResult query_result = query_context->Query(sql);
+    //
+    //     auto nodes = query_context->logical_planner()->LogicalPlans();
+    //     for (const auto &node : nodes) {
+    //         CheckLogicalNode(node, LogicalNodeType::kAggregate);
+    //     }
+    //
+    //     bool ok = HandleQueryResult(query_result);
+    //     EXPECT_TRUE(ok);
+    // }
 }

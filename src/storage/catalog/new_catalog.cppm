@@ -17,7 +17,6 @@ export module infinity_core:new_catalog;
 import :status;
 import :meta_info;
 import :default_values;
-import :buffer_handle;
 import :profiler;
 import :storage;
 import :meta_tree;
@@ -41,7 +40,6 @@ export class ColumnMeta;
 export class TableIndexMeta;
 export class SegmentIndexMeta;
 export class ChunkIndexMeta;
-class BufferObj;
 export struct ColumnVector;
 struct MetaKey;
 class KVStore;
@@ -60,6 +58,7 @@ class SystemCache;
 class FunctionSet;
 class SpecialFunction;
 class MetaCache;
+class VersionFileWorker;
 
 enum class ColumnVectorMode;
 
@@ -73,15 +72,15 @@ export struct TableLockForMemIndex {
     size_t append_count_{0};
 };
 
-export struct BlockLock {
-    BlockLock() = default;
-    BlockLock(TxnTimeStamp checkpoint_ts) : checkpoint_ts_(checkpoint_ts) {}
-
-    std::shared_mutex mtx_;
-    TxnTimeStamp min_ts_{};
-    TxnTimeStamp max_ts_{};
-    TxnTimeStamp checkpoint_ts_{};
-};
+// export struct BlockLock {
+//     BlockLock() = default;
+//     BlockLock(TxnTimeStamp checkpoint_ts) : checkpoint_ts_(checkpoint_ts) {}
+//
+//     std::shared_mutex mtx_;
+//     TxnTimeStamp min_ts_{};
+//     TxnTimeStamp max_ts_{};
+//     TxnTimeStamp checkpoint_ts_{};
+// };
 
 export struct SegmentIndexFtInfo {
     u64 ft_column_len_sum_{}; // increase only
@@ -93,13 +92,11 @@ export struct SegmentUpdateTS {
     TxnTimeStamp ts_{0};
 };
 
-struct ChunkInfoForCreateIndex;
-
 export class NewTxnGetVisibleRangeState {
 public:
     NewTxnGetVisibleRangeState() = default;
 
-    void Init(std::shared_ptr<BlockLock> block_lock, BufferHandle version_buffer_handle, TxnTimeStamp begin_ts, TxnTimeStamp commit_ts_);
+    void Init(VersionFileWorker *version_file_worker, TxnTimeStamp begin_ts, TxnTimeStamp commit_ts_);
 
     bool Next(BlockOffset block_offset_begin, std::pair<BlockOffset, BlockOffset> &visible_range);
 
@@ -112,8 +109,7 @@ public:
     bool end() const { return end_; }
 
 private:
-    std::shared_ptr<BlockLock> block_lock_;
-    BufferHandle version_buffer_handle_;
+    VersionFileWorker *version_file_worker_{};
     TxnTimeStamp begin_ts_ = 0;
     TxnTimeStamp commit_ts_ = 0;
     BlockOffset block_offset_begin_ = 0;
@@ -130,7 +126,7 @@ public:
     BlockOffset cur() const { return cur_; }
 
 private:
-    NewTxnGetVisibleRangeState *visit_state_ = nullptr;
+    NewTxnGetVisibleRangeState *visit_state_{};
     std::pair<BlockOffset, BlockOffset> visible_range_ = {0, 0};
     BlockOffset cur_ = 0;
     bool end_ = false;
@@ -162,15 +158,8 @@ private:
 
     std::unordered_map<u64, std::shared_ptr<std::unordered_map<u64, std::shared_ptr<TableCache>>>> table_cache_map_{};
 
-public:
-    Status AddBlockLock(std::string block_key);
-    Status AddBlockLock(std::string block_key, TxnTimeStamp checkpoint_ts);
-    Status GetBlockLock(const std::string &block_key, std::shared_ptr<BlockLock> &block_lock);
-    Status DropBlockLockByBlockKey(const std::string &block_key);
-
 private:
     std::shared_mutex block_lock_mtx_{};
-    std::unordered_map<std::string, std::shared_ptr<BlockLock>> block_lock_map_{};
 
 public:
     std::shared_ptr<MemIndex> GetMemIndex(const std::string &mem_index_key, bool for_update);
@@ -191,12 +180,6 @@ private:
     std::shared_mutex ft_index_cache_mtx_{};
     std::unordered_map<std::string, std::shared_ptr<TableIndexReaderCache>> ft_index_cache_map_{};
 
-public:
-    Status AddSegmentUpdateTS(std::string segment_update_ts_key, std::shared_ptr<SegmentUpdateTS> segment_update_ts);
-    Status GetSegmentUpdateTS(const std::string &segment_update_ts_key, std::shared_ptr<SegmentUpdateTS> &segment_update_ts);
-    void DropSegmentUpdateTSByKey(const std::string &segment_update_ts_key);
-
-private:
     std::shared_mutex segment_update_ts_mtx_{};
     std::unordered_map<std::string, std::shared_ptr<SegmentUpdateTS>> segment_update_ts_map_{};
 
@@ -289,7 +272,7 @@ public:
     static Status
     AddNewBlockColumn(BlockMeta &block_meta, size_t column_idx, const std::shared_ptr<ColumnDef> &column_def, std::optional<ColumnMeta> &column_meta);
 
-    static Status CleanBlockColumn(ColumnMeta &column_meta, const ColumnDef *column_def, UsageFlag usage_flag);
+    static Status CleanBlockColumn(ColumnMeta &column_meta, const std::shared_ptr<ColumnDef> &column_def, UsageFlag usage_flag);
 
     static Status RestoreNewSegmentIndex1(TableIndexMeta &table_index_meta,
                                           NewTxn *new_txn,
@@ -369,6 +352,8 @@ public:
     static Status CheckTableIfDelete(TableMeta &table_meta, TxnTimeStamp begin_ts, bool &has_delete);
 
     static Status SetBlockDeleteBitmask(BlockMeta &block_meta, TxnTimeStamp begin_ts, TxnTimeStamp commit_ts, Bitmask &bitmask);
+
+    static Status SetSegmentDeleteBitmask(BlockMeta &block_meta, TxnTimeStamp begin_ts, TxnTimeStamp commit_ts, Bitmask &segment_bitmask);
 
     static Status CheckSegmentRowsVisible(SegmentMeta &segment_meta, TxnTimeStamp begin_ts, TxnTimeStamp commit_ts, Bitmask &bitmask);
 

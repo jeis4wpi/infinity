@@ -71,13 +71,19 @@ class TestSnapshot:
         """
         Comprehensive test to verify that a restored table functions normally.
         Tests all major operations: search, insert, drop indexes, add indexes, delete data, rename columns.
-        
+
         Args:
             table_name: Name of the restored table to test
             db_obj: Database object
             expected_row_count: Expected number of rows in the table (optional)
         """
         print(f"\n=== Testing restored table functionality: {table_name} ===")
+
+        # restore_result = self.infinity_obj.create_system_snapshot("aaaa")
+        # self.infinity_obj.create_database("dsb123")
+        # db_obj = self.infinity_obj.get_database("dsb123")
+        # self.infinity_obj.drop_database("default_db")
+        # restore_result = self.infinity_obj.restore_system_snapshot("aaaa")
 
         # Get the restored table
         restored_table = db_obj.get_table(table_name)
@@ -605,7 +611,7 @@ class TestSnapshot:
     #     # Create snapshots for all tables concurrently
     #     print(f"Creating {num_tables} snapshots concurrently...")
     #     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-    #         futures = [executor.submit(create_snapshot_for_table, table_name) 
+    #         futures = [executor.submit(create_snapshot_for_table, table_name)
     #                   for table_name, _ in tables]
     #         create_results = [future.result() for future in futures]
 
@@ -628,7 +634,7 @@ class TestSnapshot:
     #     # Restore all snapshots concurrently
     #     print(f"Restoring {num_tables} snapshots concurrently...")
     #     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-    #         futures = [executor.submit(restore_snapshot_for_table, table_name) 
+    #         futures = [executor.submit(restore_snapshot_for_table, table_name)
     #                   for table_name, _ in tables]
     #         restore_results = [future.result() for future in futures]
 

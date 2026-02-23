@@ -21,6 +21,7 @@ import :index_defines;
 import :logger;
 import :status;
 import :default_values;
+import :file_worker;
 
 import third_party;
 
@@ -31,16 +32,17 @@ export class TermDocIterator;
 class NewTxn;
 class MemoryIndexer;
 class TableIndexMeta;
-class BufferObj;
 struct SegmentIndexFtInfo;
+struct IndexFileWorker;
+struct RawFileWorker;
 
 struct ColumnReaderChunkInfo {
-    BufferObj *index_buffer_ = nullptr;
+    RawFileWorker *index_file_worker_{};
     RowID base_rowid_{};
     size_t row_cnt_{};
     size_t term_cnt_{};
-    SegmentID segment_id_ = 0;
-    ChunkID chunk_id_ = 0;
+    SegmentID segment_id_{};
+    ChunkID chunk_id_{};
 };
 
 export class ColumnIndexReader {
@@ -75,7 +77,7 @@ public:
     std::string analyzer_;
     // for loading column length files
     std::string index_dir_;
-    std::shared_ptr<MemoryIndexer> memory_indexer_{nullptr};
+    std::shared_ptr<MemoryIndexer> memory_indexer_;
 
     std::vector<ColumnReaderChunkInfo> chunk_index_meta_infos_;
 };

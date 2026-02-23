@@ -2,13 +2,9 @@
 // Created by infiniflow on 25-5-13.
 //
 
-module;
-
 module infinity_core:hnsw_handler.impl;
 
 import :hnsw_handler;
-import :buffer_manager;
-import :buffer_handle;
 import :block_column_iter;
 import :memindex_tracer;
 import :default_values;
@@ -18,6 +14,7 @@ import :column_vector;
 import :local_file_handle;
 import :chunk_index_meta;
 import :plain_vec_store;
+import :hnsw_file_worker;
 
 import third_party;
 
@@ -332,13 +329,13 @@ void HnswHandler::SetLSGParam() {
         [&](auto &&index) {
             using T = std::decay_t<decltype(index)>;
             if constexpr (std::is_same_v<T, std::nullptr_t>) {
-                UnrecoverableError("Invalid index type.");
+                static_assert(true, "Invalid index type.");
             } else {
                 using IndexT = std::decay_t<decltype(*index)>;
                 if constexpr (IndexT::LSG) {
                     index->SetLSGParam();
                 } else {
-                    UnrecoverableError("Invalid index type.");
+                    static_assert(true, "Invalid index type.");
                 }
             }
         },
@@ -350,7 +347,7 @@ size_t HnswHandler::MemUsage() const {
         [&](auto &&index) {
             using T = std::decay_t<decltype(index)>;
             if constexpr (std::is_same_v<T, std::nullptr_t>) {
-                return size_t(0);
+                return static_cast<size_t>(0);
             } else {
                 return index->mem_usage();
             }
@@ -363,7 +360,7 @@ size_t HnswHandler::GetRowCount() const {
         [](auto &&index) {
             using IndexType = std::decay_t<decltype(index)>;
             if constexpr (std::is_same_v<IndexType, std::nullptr_t>) {
-                return size_t(0);
+                return static_cast<size_t>(0);
             } else {
                 return index->GetVecNum();
             }
@@ -382,7 +379,7 @@ size_t HnswHandler::GetSizeInBytes() const {
                 if constexpr (IndexT::kOwnMem) {
                     return index->GetSizeInBytes();
                 } else {
-                    return size_t(0);
+                    return static_cast<size_t>(0);
                 }
             }
         },
@@ -396,7 +393,7 @@ void HnswHandler::Check() const {
         [&](auto &&index) {
             using T = std::decay_t<decltype(index)>;
             if constexpr (std::is_same_v<T, std::nullptr_t>) {
-                UnrecoverableError("Invalid index type.");
+                static_assert(true, "Invalid index type.");
             } else {
                 index->Check();
             }
@@ -404,72 +401,57 @@ void HnswHandler::Check() const {
         hnsw_);
 }
 
-void HnswHandler::SaveToPtr(LocalFileHandle &file_handle) const {
+void HnswHandler::SaveToPtr(void *&mmap_p, size_t &offset) const {
     std::visit(
         [&](auto &&index) {
             using T = std::decay_t<decltype(index)>;
             if constexpr (std::is_same_v<T, std::nullptr_t>) {
-                UnrecoverableError("Invalid index type.");
+                static_assert(true, "Invalid index type.");
             } else {
                 using IndexT = std::decay_t<decltype(*index)>;
                 if constexpr (IndexT::kOwnMem) {
-                    index->SaveToPtr(file_handle);
+                    index->SaveToPtr(mmap_p, offset);
                 } else {
-                    UnrecoverableError("Invalid index type.");
+                    static_assert(true, "Invalid index type.");
                 }
             }
         },
         hnsw_);
 }
 
-void HnswHandler::Load(LocalFileHandle &file_handle) {
+size_t HnswHandler::CalcSize() const {
+    size_t ret{};
+
     std::visit(
-        [&](auto &&index) {
+        [&](auto &&index) mutable {
             using T = std::decay_t<decltype(index)>;
             if constexpr (std::is_same_v<T, std::nullptr_t>) {
-                UnrecoverableError("Invalid index type.");
+                static_assert(true, "Invalid index type.");
             } else {
                 using IndexT = std::decay_t<decltype(*index)>;
                 if constexpr (IndexT::kOwnMem) {
-                    index = IndexT::Load(file_handle);
+                    ret += index->CalcSize();
                 } else {
-                    UnrecoverableError("Invalid index type.");
+                    static_assert(true, "Invalid index type.");
                 }
             }
         },
         hnsw_);
+    return ret;
 }
 
-void HnswHandler::LoadFromPtr(LocalFileHandle &file_handle, size_t file_size) {
+void HnswHandler::LoadFromPtr(void *&m_mmap, size_t &mmap_size, size_t file_size) {
     std::visit(
         [&](auto &&index) {
             using T = std::decay_t<decltype(index)>;
             if constexpr (std::is_same_v<T, std::nullptr_t>) {
-                UnrecoverableError("Invalid index type.");
+                static_assert(true, "Invalid index type.");
             } else {
                 using IndexT = std::decay_t<decltype(*index)>;
                 if constexpr (IndexT::kOwnMem) {
-                    index = IndexT::LoadFromPtr(file_handle, file_size);
+                    index = IndexT::LoadFromPtr(m_mmap, mmap_size, file_size);
                 } else {
-                    UnrecoverableError("Invalid index type.");
-                }
-            }
-        },
-        hnsw_);
-}
-
-void HnswHandler::LoadFromPtr(const char *ptr, size_t size) {
-    std::visit(
-        [&](auto &&index) {
-            using T = std::decay_t<decltype(index)>;
-            if constexpr (std::is_same_v<T, std::nullptr_t>) {
-                UnrecoverableError("Invalid index type.");
-            } else {
-                using IndexT = std::decay_t<decltype(*index)>;
-                if constexpr (IndexT::kOwnMem) {
-                    UnrecoverableError("Invalid index type.");
-                } else {
-                    index = IndexT::LoadFromPtr(ptr, size);
+                    static_assert(true, "Invalid index type.");
                 }
             }
         },
@@ -481,13 +463,13 @@ void HnswHandler::Build(VertexType vertex_i) {
         [&](auto &&index) {
             using T = std::decay_t<decltype(index)>;
             if constexpr (std::is_same_v<T, std::nullptr_t>) {
-                UnrecoverableError("Invalid index type.");
+                static_assert(true, "Invalid index type.");
             } else {
                 using IndexT = std::decay_t<decltype(*index)>;
                 if constexpr (IndexT::kOwnMem) {
                     index->Build(vertex_i);
                 } else {
-                    UnrecoverableError("Invalid index type.");
+                    static_assert(true, "Invalid index type.");
                 }
             }
         },
@@ -499,13 +481,13 @@ void HnswHandler::Optimize() {
         [&](auto &&index) {
             using T = std::decay_t<decltype(index)>;
             if constexpr (std::is_same_v<T, std::nullptr_t>) {
-                UnrecoverableError("Invalid index type.");
+                static_assert(true, "Invalid index type.");
             } else {
                 using IndexT = std::decay_t<decltype(*index)>;
                 if constexpr (IndexT::kOwnMem) {
                     index->Optimize();
                 } else {
-                    UnrecoverableError("Invalid index type.");
+                    static_assert(true, "Invalid index type.");
                 }
             }
         },
@@ -517,18 +499,18 @@ void HnswHandler::CompressToLVQ() {
         [&](auto &&index) {
             using T = std::decay_t<decltype(index)>;
             if constexpr (std::is_same_v<T, std::nullptr_t>) {
-                UnrecoverableError("Invalid index type.");
+                static_assert(true, "Invalid index type.");
             } else {
                 using IndexT = std::decay_t<decltype(*index)>;
                 if constexpr (IndexT::kOwnMem) {
                     using HnswIndexDataType = IndexT::DataType;
                     if constexpr (IsAnyOf<HnswIndexDataType, i8, u8>) {
-                        UnrecoverableError("Invalid index type.");
+                        static_assert(true, "Invalid index type.");
                     } else {
                         hnsw_ = std::move(*index).CompressToLVQ();
                     }
                 } else {
-                    UnrecoverableError("Invalid index type.");
+                    static_assert(true, "Invalid index type.");
                 }
             }
         },
@@ -559,18 +541,17 @@ void HnswHandler::CompressToRabitq() {
 }
 
 HnswIndexInMem::~HnswIndexInMem() {
-    size_t mem_usage = hnsw_handler_->MemUsage();
     if (own_memory_ && hnsw_handler_ != nullptr) {
+        size_t mem_usage = hnsw_handler_->MemUsage();
         delete hnsw_handler_;
-    }
-
-    auto *storage = InfinityContext::instance().storage();
-    if (storage == nullptr) {
-        return;
-    }
-    auto *memindex_tracer = storage->memindex_tracer();
-    if (memindex_tracer != nullptr) {
-        memindex_tracer->DecreaseMemUsed(mem_usage);
+        auto *storage = InfinityContext::instance().storage();
+        if (storage == nullptr) {
+            return;
+        }
+        auto *memindex_tracer = storage->memindex_tracer();
+        if (memindex_tracer != nullptr) {
+            memindex_tracer->DecreaseMemUsed(mem_usage);
+        }
     }
 }
 
@@ -578,9 +559,9 @@ std::unique_ptr<HnswIndexInMem> HnswIndexInMem::Make(RowID begin_row_id, const I
     auto memidx = std::make_unique<HnswIndexInMem>(begin_row_id, index_base, column_def);
 
     auto *storage = InfinityContext::instance().storage();
-    if (storage != nullptr) {
+    if (storage) {
         auto *memindex_tracer = storage->memindex_tracer();
-        if (memindex_tracer != nullptr) {
+        if (memindex_tracer) {
             memindex_tracer->IncreaseMemoryUsage(memidx->hnsw_handler_->MemUsage());
         }
     }
@@ -620,17 +601,28 @@ void HnswIndexInMem::InsertVecs(SegmentOffset block_offset,
     IncreaseMemoryUsageBase(mem_usage);
 }
 
-void HnswIndexInMem::Dump(BufferObj *buffer_obj, size_t *dump_size_ptr) {
+void HnswIndexInMem::Dump(HnswFileWorker *index_file_worker, size_t *dump_size_ptr) {
     if (dump_size_ptr != nullptr) {
         size_t dump_size = hnsw_handler_->MemUsage();
         *dump_size_ptr = dump_size;
     }
 
-    BufferHandle handle = buffer_obj->Load();
-    auto *data_ptr = static_cast<HnswHandlerPtr *>(handle.GetDataMut());
-    *data_ptr = hnsw_handler_;
     own_memory_ = false;
-    chunk_handle_ = std::move(handle);
+    index_file_worker_ = std::move(index_file_worker);
+    auto hnsw_handler = std::shared_ptr<HnswHandler>(hnsw_handler_);
+
+    size_t mem_usage = hnsw_handler_->MemUsage();
+
+    auto *storage = InfinityContext::instance().storage();
+    if (storage == nullptr) {
+        return;
+    }
+    auto *memindex_tracer = storage->memindex_tracer();
+    if (memindex_tracer != nullptr) {
+        memindex_tracer->DecreaseMemUsed(mem_usage);
+    }
+
+    FileWorker::Write(index_file_worker_, std::move(hnsw_handler));
 }
 
 size_t

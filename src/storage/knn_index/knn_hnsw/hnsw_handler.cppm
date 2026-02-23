@@ -18,7 +18,6 @@ import :infinity_context;
 import :logger;
 import :base_memindex;
 import :memindex_tracer;
-import :buffer_handle;
 import :config;
 import :chunk_index_meta;
 
@@ -31,10 +30,9 @@ import column_def;
 
 namespace infinity {
 
-class BufferManager;
 struct ColumnVector;
-class BufferObj;
 class LocalFileHandle;
+export struct HnswFileWorker;
 
 using AbstractHnsw = std::variant<std::unique_ptr<KnnHnsw<PlainCosVecStoreType<float>, SegmentOffset>>,
                                   std::unique_ptr<KnnHnsw<PlainIPVecStoreType<float>, SegmentOffset>>,
@@ -101,8 +99,8 @@ using AbstractHnsw = std::variant<std::unique_ptr<KnnHnsw<PlainCosVecStoreType<f
 
 export struct HnswHandler {
 public:
-    HnswHandler() : hnsw_(nullptr) {}
-    virtual ~HnswHandler() {}
+    // HnswHandler() : hnsw_(nullptr) {}
+    // virtual ~HnswHandler() {}
     HnswHandler(const HnswHandler &) = delete;
     HnswHandler &operator=(const HnswHandler &) = delete;
 
@@ -296,10 +294,9 @@ public:
 
 public:
     // hnsw_ data operator
-    void SaveToPtr(LocalFileHandle &file_handle) const;
-    void Load(LocalFileHandle &file_handle);
-    void LoadFromPtr(LocalFileHandle &file_handle, size_t file_size);
-    void LoadFromPtr(const char *ptr, size_t size);
+    size_t CalcSize() const;
+    void SaveToPtr(void *&mmap_p, size_t &offset) const;
+    void LoadFromPtr(void *&m_mmap, size_t &mmap_size, size_t file_size);
     void Build(VertexType vertex_i);
     void Optimize();
     void CompressToLVQ();
@@ -339,7 +336,7 @@ public:
         IncreaseMemoryUsageBase(mem_usage);
     }
 
-    void Dump(BufferObj *buffer_obj, size_t *dump_size_ptr = nullptr);
+    void Dump(HnswFileWorker *index_file_worker, size_t *dump_size_ptr = nullptr);
 
 public:
     // LSG setting
@@ -372,11 +369,11 @@ protected:
 private:
     static constexpr size_t kBuildBucketSize = 1024;
 
-    RowID begin_row_id_ = {};
-    size_t row_count_ = 0;
-    HnswHandlerPtr hnsw_handler_;
+    RowID begin_row_id_{};
+    size_t row_count_{};
+    HnswHandlerPtr hnsw_handler_{};
     bool own_memory_{};
-    BufferHandle chunk_handle_{};
+    HnswFileWorker *index_file_worker_{};
 };
 
 } // namespace infinity

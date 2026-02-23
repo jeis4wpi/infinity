@@ -10,8 +10,11 @@ import {
 import { listDatabase, listTable } from '../actions';
 import { InfinityContextMenuContent } from './context-menu';
 
+export const dynamic = 'force-dynamic';
+
 async function InfinityTable() {
   const tables = await listTable('default_db');
+  const tableNames = tables?.tables ?? tables?.table_names ?? [];
   return (
     <Table>
       <TableHeader>
@@ -20,7 +23,7 @@ async function InfinityTable() {
         </TableRow>
       </TableHeader>
       <TableBody>
-        {tables.tables?.map((table: string) => (
+        {tableNames.map((table: string) => (
           <TableRow key={table}>
             <TableCell className="font-medium">{table}</TableCell>
           </TableRow>
@@ -56,7 +59,7 @@ export default async function DatabasePage() {
     items.push({
       key: latestDatabase,
       label: latestDatabase,
-      children: tables?.tables ?? []
+      children: tables?.tables ?? tables?.table_names ?? []
     });
   }
 

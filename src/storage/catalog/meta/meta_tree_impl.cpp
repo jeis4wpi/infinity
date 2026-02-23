@@ -23,12 +23,10 @@ import :infinity_context;
 import :infinity_exception;
 import :default_values;
 import :logger;
-import :buffer_obj;
 import :storage;
 import :config;
-import :buffer_manager;
+
 import :block_version;
-import :buffer_handle;
 import :new_catalog;
 import :status;
 import :kv_code;
@@ -48,7 +46,7 @@ import internal_types;
 namespace infinity {
 
 std::shared_ptr<MetaTree> MetaTree::MakeMetaTree(const std::vector<std::shared_ptr<MetaKey>> &meta_keys) {
-    std::shared_ptr<MetaTree> meta_tree = std::make_shared<MetaTree>();
+    auto meta_tree = std::make_shared<MetaTree>();
     meta_tree->metas_ = std::move(meta_keys);
     auto &meta_keys_ref = meta_tree->metas_;
     size_t meta_count = meta_keys_ref.size();
@@ -613,7 +611,7 @@ std::shared_ptr<DbCache> MetaDBObject::RestoreDbCache(Storage *storage_ptr) cons
     } catch (const std::exception &e) {
         UnrecoverableError(fmt::format("DB id is invalid: {}, cause: {}", db_key->db_id_str_, e.what()));
     }
-    std::shared_ptr<DbCache> db_cache = std::make_shared<DbCache>(db_id, db_key->db_name_, 0);
+    auto db_cache = std::make_shared<DbCache>(db_id, db_key->db_name_, 0);
     for (const auto &table_pair : table_map_) {
         MetaTableObject *meta_table_object = static_cast<MetaTableObject *>(table_pair.second.get());
         std::shared_ptr<TableCache> table_cache = meta_table_object->RestoreTableCache(storage_ptr);
@@ -661,7 +659,7 @@ SegmentID MetaTableObject::GetNextSegmentID() const {
 SegmentID MetaTableObject::GetUnsealedSegmentID() const {
     auto meta_iter = tag_map_.find("unsealed_segment_id");
     if (meta_iter == tag_map_.end()) {
-        SegmentID next_segment_id = this->GetNextSegmentID();
+        SegmentID next_segment_id = GetNextSegmentID();
         std::string error_msg =
             fmt::format("Can't find 'unsealed_segment_id' in table: {}, use next segment id: {}", meta_key_->ToString(), next_segment_id);
         LOG_WARN(error_msg);
@@ -683,7 +681,7 @@ size_t MetaTableObject::GetCurrentSegmentRowCount(Storage *storage_ptr) const {
     if (segment_map_.empty()) {
         return 0;
     }
-    SegmentID unsealed_segment_id = this->GetUnsealedSegmentID();
+    SegmentID unsealed_segment_id = GetUnsealedSegmentID();
     auto seg_iter = segment_map_.find(unsealed_segment_id);
     if (seg_iter == segment_map_.end()) {
         std::string error_msg = fmt::format("Can't find unsealed segment id: {}, table: {}", unsealed_segment_id, meta_key_->ToString());
@@ -697,37 +695,21 @@ size_t MetaTableObject::GetCurrentSegmentRowCount(Storage *storage_ptr) const {
     }
     TableMetaKey *table_meta_key = static_cast<TableMetaKey *>(meta_key_.get());
     BlockID current_block_id = segment_object->GetCurrentBlockID();
-    BufferManager *buffer_mgr_ptr = storage_ptr->buffer_manager();
-    Config *config_ptr = storage_ptr->config();
-    std::string version_filepath = fmt::format("{}/db_{}/tbl_{}/seg_{}/blk_{}/{}",
-                                               config_ptr->DataDir(),
-                                               table_meta_key->db_id_str_,
-                                               table_meta_key->table_id_str_,
-                                               unsealed_segment_id,
-                                               current_block_id,
-                                               BlockVersion::PATH);
-    BufferObj *version_buffer = buffer_mgr_ptr->GetBufferObject(version_filepath);
-    if (version_buffer == nullptr) {
-        UnrecoverableError(fmt::format("Can't get version from: {}", version_filepath));
+    auto *file_worker_mgr = storage_ptr->fileworker_manager();
+    auto rel_version_path = fmt::format("db_{}/tbl_{}/seg_{}/blk_{}/{}",
+                                        table_meta_key->db_id_str_,
+                                        table_meta_key->table_id_str_,
+                                        unsealed_segment_id,
+                                        current_block_id,
+                                        BlockVersion::PATH);
+    auto *version_file_worker = file_worker_mgr->version_map_.GetFileWorker(rel_version_path);
+    if (version_file_worker == nullptr) {
+        UnrecoverableError(fmt::format("Can't get version from: {}", rel_version_path));
     }
-    BufferHandle buffer_handle = version_buffer->Load();
-    const auto *block_version = reinterpret_cast<const BlockVersion *>(buffer_handle.GetData());
-    size_t row_cnt = 0;
-    {
-        std::shared_ptr<BlockLock> block_lock{};
-        NewCatalog *new_catalog = storage_ptr->new_catalog();
-        std::string block_lock_key = KeyEncode::CatalogTableSegmentBlockTagKey(table_meta_key->db_id_str_,
-                                                                               table_meta_key->table_id_str_,
-                                                                               unsealed_segment_id,
-                                                                               current_block_id,
-                                                                               "lock");
-        Status status = new_catalog->GetBlockLock(block_lock_key, block_lock);
-        if (!status.ok()) {
-            UnrecoverableError(status.message());
-        }
-        std::shared_lock lock(block_lock->mtx_);
-        row_cnt = block_version->GetRowCount();
-    }
+    std::shared_ptr<BlockVersion> block_version;
+    FileWorker::Read(version_file_worker, block_version);
+    size_t row_cnt = block_version->GetRowCount();
+
     size_t segment_row_count = (block_count - 1) * DEFAULT_BLOCK_CAPACITY + row_cnt;
     return segment_row_count;
 }
@@ -742,14 +724,14 @@ std::shared_ptr<TableCache> MetaTableObject::RestoreTableCache(Storage *storage_
     try {
         db_id = std::stoull(table_key->db_id_str_);
         table_id = std::stoull(table_key->table_id_str_);
-        unsealed_segment_id = this->GetUnsealedSegmentID();
-        unsealed_segment_offset = this->GetCurrentSegmentRowCount(storage_ptr);
-        next_segment_id = this->GetNextSegmentID();
+        unsealed_segment_id = GetUnsealedSegmentID();
+        unsealed_segment_offset = GetCurrentSegmentRowCount(storage_ptr);
+        next_segment_id = GetNextSegmentID();
     } catch (const std::exception &e) {
         UnrecoverableError(fmt::format("DB id or table id is invalid: {}, cause: {}", table_key->ToString(), e.what()));
     }
 
-    std::shared_ptr<TableCache> table_cache = nullptr;
+    std::shared_ptr<TableCache> table_cache;
     if (unsealed_segment_id == 0 and unsealed_segment_offset == 0) {
         table_cache = std::make_shared<TableCache>(table_id, table_key->table_name_);
     } else {
@@ -761,7 +743,7 @@ std::shared_ptr<TableCache> MetaTableObject::RestoreTableCache(Storage *storage_
     auto kv_instance_ptr = kv_store->GetInstance();
     for (const auto &segment_pair : segment_map_) {
         SegmentID segment_id = segment_pair.first;
-        std::shared_ptr<SegmentCache> segment_cache = nullptr;
+        std::shared_ptr<SegmentCache> segment_cache;
         if (segment_id == unsealed_segment_id) {
             table_cache->unsealed_segment_cache_ = std::make_shared<SegmentCache>(segment_id, unsealed_segment_offset);
         } else {
@@ -776,12 +758,16 @@ std::shared_ptr<TableCache> MetaTableObject::RestoreTableCache(Storage *storage_
         table_cache->segment_cache_map_.emplace(segment_id, segment_cache);
     }
 
+    u64 max_index_id = 0;
     for (const auto &index_pair : index_map_) {
         const std::string &index_name = index_pair.first;
         MetaTableIndexObject *table_index_obj = static_cast<MetaTableIndexObject *>(index_pair.second.get());
         TableIndexMetaKey *table_index_meta_key = static_cast<TableIndexMetaKey *>(table_index_obj->meta_key_.get());
         u64 index_id = std::stoull(table_index_meta_key->index_id_str_);
         std::shared_ptr<TableIndexCache> table_index_cache = std::make_shared<TableIndexCache>(db_id, table_id, index_id, index_name);
+        if (index_id > max_index_id) {
+            max_index_id = index_id;
+        }
         for (const auto &segment_index_pair : table_index_obj->segment_map_) {
             SegmentID segment_id = segment_index_pair.first;
             MetaSegmentIndexObject *segment_index_obj = static_cast<MetaSegmentIndexObject *>(segment_index_pair.second.get());
@@ -798,7 +784,7 @@ std::shared_ptr<TableCache> MetaTableObject::RestoreTableCache(Storage *storage_
         }
         table_cache->index_cache_map_.emplace(index_id, table_index_cache);
     }
-
+    table_cache->next_index_id_ = max_index_id + 1;
     return table_cache;
 }
 
@@ -1065,7 +1051,7 @@ bool MetaTree::CheckData(const std::string &path) {
 
 std::unordered_set<std::string> MetaTree::GetDataVfsPathSet() {
     std::unordered_set<std::string> data_path_set;
-    const auto *pm = InfinityContext::instance().storage()->buffer_manager()->persistence_manager();
+    const auto *pm = InfinityContext::instance().storage()->fileworker_manager()->persistence_manager();
     for (auto files = pm->GetAllFiles(); const auto &path : files | std::views::keys) {
         data_path_set.emplace(path);
     }
@@ -1086,8 +1072,8 @@ std::unordered_set<std::string> MetaTree::GetDataVfsOffPathSet() {
 }
 
 std::vector<std::string> MetaTree::CheckMetaDataMapping(CheckStmtType tag, std::optional<std::string> db_table_str) {
-    const auto *pm = InfinityContext::instance().storage()->buffer_manager()->persistence_manager();
-    auto data_path_set = pm != nullptr ? this->GetDataVfsPathSet() : this->GetDataVfsOffPathSet();
+    const auto *pm = InfinityContext::instance().storage()->fileworker_manager()->persistence_manager();
+    auto data_path_set = pm != nullptr ? GetDataVfsPathSet() : GetDataVfsOffPathSet();
 
     std::vector<std::string> data_mismatch_entry;
 

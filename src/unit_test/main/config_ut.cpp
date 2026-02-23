@@ -38,7 +38,7 @@ TEST_F(ConfigTest, test1) {
     auto status = config.Init(path, nullptr);
     ASSERT_TRUE(status.ok());
 
-    EXPECT_EQ(config.Version(), "0.6.10");
+    EXPECT_EQ(config.Version(), "0.7.0");
     EXPECT_EQ(config.TimeZone(), "UTC");
     EXPECT_EQ(config.TimeZoneBias(), 8);
     EXPECT_EQ(config.CPULimit(), std::thread::hardware_concurrency());
@@ -81,12 +81,12 @@ TEST_F(ConfigTest, test1) {
 
 TEST_F(ConfigTest, test2) {
     using namespace infinity;
-    std::shared_ptr<std::string> path = std::make_shared<std::string>(std::string(test_data_path()) + "/config/infinity_conf.toml");
+    auto path = std::make_shared<std::string>(fmt::format("{}/config/infinity_conf.toml", test_data_path()));
     Config config;
     auto status = config.Init(path, nullptr);
     ASSERT_TRUE(status.ok());
 
-    EXPECT_EQ(config.Version(), "0.6.10");
+    EXPECT_EQ(config.Version(), "0.7.0");
     EXPECT_EQ(config.TimeZone(), "UTC");
     EXPECT_EQ(config.TimeZoneBias(), -8);
 
@@ -127,7 +127,7 @@ TEST_F(ConfigTest, test2) {
     EXPECT_EQ(config.TempDir(), "/var/infinity/tmp");
     EXPECT_EQ(config.MemIndexMemoryQuota(), 2 * 1024l * 1024l * 1024l);
 
-    EXPECT_EQ(config.ResultCache(), "on");
+    EXPECT_EQ(config.ResultCache(), "off");
     EXPECT_EQ(config.CacheResultNum(), 100);
 }
 
@@ -208,7 +208,7 @@ TEST_F(ConfigTest, TestValidValues) {
     auto status = config.Init(path, nullptr);
     ASSERT_TRUE(status.ok());
 
-    EXPECT_EQ(config.Version(), "0.6.10");
+    EXPECT_EQ(config.Version(), "0.7.0");
     EXPECT_EQ(config.TimeZone(), "UTC");
     EXPECT_EQ(config.TimeZoneBias(), -8);
     EXPECT_EQ(config.CPULimit(), 2);

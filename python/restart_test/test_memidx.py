@@ -97,6 +97,9 @@ class TestMemIdx:
                 data_dict, data_type_dict, _ = table_obj.output(["count(*)"]).to_result()
                 assert data_dict["count(star)"] == [13]
 
+            # Wait for memindex dump
+            # If search is processed during memindex dump, it is possible to get partial results.
+            time.sleep(5)
             check()
             table_obj.optimize()
             check()
@@ -482,7 +485,7 @@ class TestMemIdx:
         decorator1 = infinity_runner_decorator_factory(config1, uri, infinity_runner)
         decorator2 = infinity_runner_decorator_factory(config2, uri, infinity_runner)
 
-        data_dir = "/var/infinity/data"
+        tmp_dir = "/var/infinity/tmp"
         idx1_name = "index1"
         idx2_name = "index2"
 
@@ -541,8 +544,8 @@ class TestMemIdx:
             # time.sleep(5)
 
             # 2 chunk indexes for each index
-            db1_dir = data_dir + "/db_2"
-            db2_dir = data_dir + "/db_3"
+            db1_dir = tmp_dir + "/db_2"
+            db2_dir = tmp_dir + "/db_3"
 
             start_time = time.time()
             while time.time() - start_time < 30:
@@ -565,8 +568,8 @@ class TestMemIdx:
             # time.sleep(20)
 
             # new chunk index is generated after optimize for each index
-            db1_dir = data_dir + "/db_2"
-            db2_dir = data_dir + "/db_3"
+            db1_dir = tmp_dir + "/db_2"
+            db2_dir = tmp_dir + "/db_3"
 
             start_time = time.time()
             while time.time() - start_time < 60:
@@ -596,8 +599,8 @@ class TestMemIdx:
             infinity_obj.cleanup()
 
             # after checkpoint (during restart) and cleanup, 2 old chunks of each index are removed
-            db1_dir = data_dir + "/db_2"
-            db2_dir = data_dir + "/db_3"
+            db1_dir = tmp_dir + "/db_2"
+            db2_dir = tmp_dir + "/db_3"
 
             start_time = time.time()
             while time.time() - start_time < 30:

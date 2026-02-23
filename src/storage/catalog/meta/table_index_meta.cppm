@@ -31,9 +31,6 @@ class IndexBase;
 class NewTxn;
 // enum class UsageFlag;
 
-// Enum for secondary index cardinality
-export enum class SecondaryIndexCardinality : u8 { kHighCardinality = 0, kLowCardinality = 1, kInvalid = 255 };
-
 export class TableIndexMeta {
 public:
     TableIndexMeta(const std::string &index_id_str, const std::string &index_name, TableMeta &table_meta);
@@ -66,9 +63,6 @@ public:
 
     std::tuple<std::shared_ptr<TableIndexSnapshotInfo>, Status> MapMetaToSnapShotInfo();
 
-private:
-    Status GetSegmentUpdateTS(std::shared_ptr<SegmentUpdateTS> &segment_update_ts);
-
 public:
     Status InitSet1(const std::shared_ptr<IndexBase> &index_base, NewCatalog *new_catalog);
 
@@ -76,12 +70,6 @@ public:
 
 private:
     std::string GetTableIndexTag(const std::string &tag) const;
-
-public:
-    // Methods for secondary index cardinality
-    Status SetSecondaryIndexCardinality(SecondaryIndexCardinality cardinality);
-
-    std::tuple<SecondaryIndexCardinality, Status> GetSecondaryIndexCardinality();
 
 private:
     mutable std::mutex mtx_;

@@ -20,17 +20,15 @@ module infinity_core:secondary_index_in_mem.impl;
 
 import :secondary_index_in_mem;
 import :default_values;
-import :buffer_manager;
 import :block_column_iter;
 import :infinity_exception;
 import :secondary_index_data;
-import :buffer_handle;
 import :logger;
 import :base_memindex;
 import :memindex_tracer;
 import :column_vector;
-import :buffer_obj;
 import :rcu_multimap;
+import :secondary_index_file_worker;
 
 import std;
 
@@ -46,6 +44,7 @@ constexpr u32 map_memory_bloat_factor = 3;
 
 template <typename RawValueType, typename CardinalityTag>
 class SecondaryIndexInMemT final : public SecondaryIndexInMem {
+
     using KeyType = ConvertToOrderedType<RawValueType>;
     const RowID begin_row_id_;
     // Replaced std::multimap + mutex with RcuMultiMap for better concurrent performance
@@ -71,28 +70,38 @@ public:
     void InsertBlockData(SegmentOffset block_offset, const ColumnVector &col, BlockOffset offset, BlockOffset row_count) override {
         MemIndexInserterIter1<RawValueType> iter(block_offset, col, offset, row_count);
         const auto inserted_rows = InsertInner(iter);
-        assert(inserted_rows == row_count);
+        assert(inserted_rows <= row_count);
         IncreaseMemoryUsageBase(inserted_rows * MemoryCostOfEachRow());
     }
 
-    void Dump(BufferObj *buffer_obj) const override {
-        BufferHandle handle = buffer_obj->Load();
-
-        // Use template specialization based on CardinalityTag
+    void Dump(SecondaryIndexFileWorker *index_file_worker) const override {
         if constexpr (std::is_same_v<CardinalityTag, HighCardinalityTag>) {
-            auto data_ptr = static_cast<SecondaryIndexDataBase<HighCardinalityTag> *>(handle.GetDataMut());
+            SecondaryIndexDataBase<HighCardinalityTag> *data_ptr{};
+            FileWorker::Read(index_file_worker, data_ptr);
+
             std::multimap<KeyType, u32> temp_map;
             const_cast<RcuMultiMap<KeyType, u32> &>(in_mem_secondary_index_).GetMergedMultiMap(temp_map);
+
             data_ptr->InsertData(&temp_map);
+            FileWorker::Write(index_file_worker, data_ptr);
         } else if constexpr (std::is_same_v<CardinalityTag, LowCardinalityTag>) {
-            auto data_ptr = static_cast<SecondaryIndexDataBase<LowCardinalityTag> *>(handle.GetDataMut());
+            // auto data_ptr = static_cast<SecondaryIndexDataBase<LowCardinalityTag> *>(handle.GetDataMut());
+            // std::multimap<KeyType, u32> temp_map;
+            // const_cast<RcuMultiMap<KeyType, u32> &>(in_mem_secondary_index_).GetMergedMultiMap(temp_map);
+            // data_ptr->InsertData(&temp_map);
+            SecondaryIndexDataBase<LowCardinalityTag> *data_ptr{};
+            FileWorker::Read(index_file_worker, data_ptr);
+
             std::multimap<KeyType, u32> temp_map;
             const_cast<RcuMultiMap<KeyType, u32> &>(in_mem_secondary_index_).GetMergedMultiMap(temp_map);
+
             data_ptr->InsertData(&temp_map);
+            FileWorker::Write(index_file_worker, data_ptr);
         } else {
             UnrecoverableError("Unsupported cardinality tag type");
         }
     }
+
     std::pair<u32, Bitmask> RangeQuery(const void *input) const override {
         const auto &[segment_row_count, b, e] = *static_cast<const std::tuple<u32, KeyType, KeyType> *>(input);
         return RangeQueryInner(segment_row_count, b, e);
@@ -101,11 +110,16 @@ public:
 private:
     u32 InsertInner(auto &iter) {
         u32 inserted_count = 0;
+        u32 bitmap_idx = 0;
         // No lock needed - RcuMultiMap handles concurrency internally
         while (true) {
             auto opt = iter.Next();
             if (!opt.has_value()) {
                 break;
+            }
+            auto &nulls_ptr = iter.column_vector()->nulls_ptr_;
+            if (nulls_ptr && !nulls_ptr->IsTrue(bitmap_idx++)) {
+                continue;
             }
             const auto &[v_ptr, offset] = opt.value();
             if constexpr (std::is_same_v<RawValueType, VarcharT>) {
@@ -150,14 +164,10 @@ MemIndexTracerInfo SecondaryIndexInMem::GetInfo() const {
 const ChunkIndexMetaInfo SecondaryIndexInMem::GetChunkIndexMetaInfo() const { return ChunkIndexMetaInfo{"", GetBeginRowID(), GetRowCount(), 0, 0}; }
 
 std::shared_ptr<SecondaryIndexInMem>
-SecondaryIndexInMem::NewSecondaryIndexInMem(const std::shared_ptr<ColumnDef> &column_def, RowID begin_row_id, SecondaryIndexCardinality cardinality) {
-    if (!column_def->type()->CanBuildSecondaryIndex()) {
-        UnrecoverableError("Column type can't build secondary index");
-    }
-
+SecondaryIndexInMem::NewSecondaryIndexInMem(const DataType &index_data_type, RowID begin_row_id, SecondaryIndexCardinality cardinality) {
     // Select template specialization based on cardinality
     if (cardinality == SecondaryIndexCardinality::kHighCardinality) {
-        switch (column_def->type()->type()) {
+        switch (index_data_type.type()) {
             case LogicalType::kTinyInt: {
                 return std::make_shared<SecondaryIndexInMemT<TinyIntT, HighCardinalityTag>>(begin_row_id, cardinality);
             }
@@ -196,7 +206,10 @@ SecondaryIndexInMem::NewSecondaryIndexInMem(const std::shared_ptr<ColumnDef> &co
             }
         }
     } else if (cardinality == SecondaryIndexCardinality::kLowCardinality) {
-        switch (column_def->type()->type()) {
+        switch (index_data_type.type()) {
+            case LogicalType::kBoolean: {
+                return std::make_shared<SecondaryIndexInMemT<BooleanT, LowCardinalityTag>>(begin_row_id, cardinality);
+            }
             case LogicalType::kTinyInt: {
                 return std::make_shared<SecondaryIndexInMemT<TinyIntT, LowCardinalityTag>>(begin_row_id, cardinality);
             }
